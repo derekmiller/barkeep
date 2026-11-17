@@ -12,6 +12,7 @@ import psycopg
 from barkeep.loader import LoadResult, load_file, record_failure
 from barkeep.loader.db import connect
 from barkeep.loader.errors import LoaderError
+from barkeep.loader.secrets import read_secret_file
 
 from .attachments import extract_csv_attachments
 
@@ -90,10 +91,20 @@ class ImapConfig:
             "since_days": os.environ.get("IMAP_SINCE_DAYS", "21"),
         }
         missing = [
-            key.upper() for key in ("host", "user", "password") if not values[key]
+            key.upper() for key in ("host", "user") if not values[key]
         ]
         if missing:
             raise LoaderError(f"missing IMAP configuration: {', '.join(missing)}")
+
+        password = values["password"]
+        if not password:
+            password_file = os.environ.get("IMAP_PASSWORD_FILE")
+            if password_file:
+                password = read_secret_file(password_file)
+        if not password:
+            raise LoaderError(
+                "missing IMAP configuration: IMAP_PASSWORD or IMAP_PASSWORD_FILE"
+            )
 
         try:
             since_days = int(values["since_days"] or "21")
@@ -107,7 +118,7 @@ class ImapConfig:
         return cls(
             host=values["host"] or "",
             user=values["user"] or "",
-            password=values["password"] or "",
+            password=password,
             mailbox=values["mailbox"] or "INBOX",
             sender=values["sender"] or None,
             subject=values["subject"] or None,

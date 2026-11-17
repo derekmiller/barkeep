@@ -1,0 +1,14 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+tests
+data
+.env
+secrets
+deploy
+Dockerfile
+.dockerignore
+compose.yaml

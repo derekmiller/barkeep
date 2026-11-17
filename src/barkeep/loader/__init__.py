@@ -6,9 +6,10 @@ from pathlib import Path
 
 import psycopg
 
-from .db import connect
+from .db import connect, resolve_database_url
 from .errors import LoaderError
 from .load import LoadResult, load_directory, load_file, record_failure
+from .secrets import read_secret_file
 
 
 def apply_migrations(
@@ -27,5 +28,7 @@ __all__ = [
     "connect",
     "load_directory",
     "load_file",
+    "read_secret_file",
     "record_failure",
+    "resolve_database_url",
 ]

@@ -2,15 +2,15 @@ services:
   db:
     image: postgres:16
     environment:
-      POSTGRES_DB: barkeep
-      POSTGRES_USER: barkeep
-      POSTGRES_PASSWORD: barkeep
+      POSTGRES_DB: ${POSTGRES_DB:-barkeep}
+      POSTGRES_USER: ${POSTGRES_USER:-barkeep}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-barkeep}
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U barkeep -d barkeep"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-barkeep} -d ${POSTGRES_DB:-barkeep}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -22,6 +22,57 @@ services:
     depends_on:
       db:
         condition: service_healthy
+
+  migrate:
+    build: .
+    profiles: ["ingest"]
+    command: ["python", "-m", "barkeep.loader.migrate"]
+    environment: &db_env
+      DATABASE_URL: postgresql://${POSTGRES_USER:-barkeep}:${POSTGRES_PASSWORD:-barkeep}@db:5432/${POSTGRES_DB:-barkeep}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  ingest:
+    build: .
+    profiles: ["ingest"]
+    command:
+      - sh
+      - -c
+      - python -m barkeep.loader.migrate && python -m barkeep.ingest.imap
+    environment:
+      <<: *db_env
+      IMAP_HOST: ${IMAP_HOST:-}
+      IMAP_USER: ${IMAP_USER:-}
+      IMAP_MAILBOX: ${IMAP_MAILBOX:-SalesReports}
+      IMAP_SENDER: ${IMAP_SENDER:-}
+      IMAP_SUBJECT: ${IMAP_SUBJECT:-}
+      IMAP_SINCE_DAYS: ${IMAP_SINCE_DAYS:-21}
+      IMAP_PASSWORD_FILE: /run/secrets/imap_password
+    secrets:
+      - imap_password
+    depends_on:
+      db:
+        condition: service_healthy
+
+  backfill:
+    build: .
+    profiles: ["ingest"]
+    command:
+      - sh
+      - -c
+      - python -m barkeep.loader.migrate && python scripts/backfill.py /data/raw
+    environment:
+      <<: *db_env
+    volumes:
+      - ./data/raw:/data/raw:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+secrets:
+  imap_password:
+    file: ./secrets/imap_password
 
 volumes:
   pgdata:

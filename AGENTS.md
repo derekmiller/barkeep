@@ -591,6 +591,8 @@ The loader lives in `src/barkeep/loader/` and is invoked after parsing.
   `public.schema_migrations`; each file runs in its own transaction.
 - No Alembic. Add a new numbered `NNN_*.sql` file for each schema change; never
   edit an already-applied migration.
+- The default SQL directory assumes a `src/` checkout. In a non-editable
+  install (the Docker image) set `BARKEEP_SQL_DIR` to the copied `sql/` path.
 
 ## 14. Schema and analytics views
 
@@ -630,20 +632,40 @@ The loader lives in `src/barkeep/loader/` and is invoked after parsing.
 - Use a dedicated label/folder (`IMAP_MAILBOX`, e.g. `SalesReports`) rather than
   `INBOX`, so the poller only ever sees report mail.
 - Configuration comes from `IMAP_HOST`, `IMAP_USER` (the real account, not the
-  alias), `IMAP_PASSWORD`, `IMAP_MAILBOX`, optional `IMAP_SENDER` /
-  `IMAP_SUBJECT`, and `IMAP_SINCE_DAYS` (see `.env.example`). Use an app
-  password on a dedicated mailbox; never commit credentials.
+  alias), `IMAP_PASSWORD` or `IMAP_PASSWORD_FILE`, `IMAP_MAILBOX`, optional
+  `IMAP_SENDER` / `IMAP_SUBJECT`, and `IMAP_SINCE_DAYS` (see `.env.example`).
+  Use an app password on a dedicated mailbox; never commit credentials.
 - The poller is a single pass (`run_once`). Schedule it externally — daily is
   recommended so a late or missed report self-heals on the next run.
 
-## 16. Explicitly out of scope
+## 16. Deployment
+
+Deployment target is an always-on Linux host running Docker Compose.
+
+- `Dockerfile` installs the package with the `loader` extra, copies `sql/` and
+  `scripts/`, sets `BARKEEP_SQL_DIR=/app/sql`, and runs as an unprivileged user.
+- `compose.yaml` keeps `db` and `metabase` in the default profile and puts
+  `migrate`, `ingest`, and `backfill` behind the `ingest` profile, so
+  `docker compose up -d` starts only the database and Metabase.
+- `ingest` runs migrations then one poll pass and exits. Trigger it daily from a
+  host timer; `deploy/barkeep-ingest.service` and `.timer` are samples. Do not
+  add an in-container sleep loop.
+- `backfill` mounts `data/raw` read-only and runs `scripts/backfill.py` for the
+  initial load. It applies migrations first.
+- Secrets: the IMAP app password is a Compose secret mounted at
+  `/run/secrets/imap_password` and read via `IMAP_PASSWORD_FILE`. The DSN can be
+  supplied via `DATABASE_URL` or `DATABASE_URL_FILE`. Secret files are
+  gitignored and never passed on the command line.
+- Container `DATABASE_URL` uses the Compose service name `db`, not `localhost`.
+
+## 17. Explicitly out of scope
 
 Do not write, suggest, or scaffold any of:
 - rename detection, fuzzy matching, alias tables (handled later by a curated
   alias table, outside this project)
 - Metabase dashboard definitions checked into this repo, or any BI-tool-specific
   query logic that belongs in a view
-- file watching, cron, `systemd`, or scheduler definitions
+- always-running ingest daemons or in-process schedulers; use an external timer
 - backfilling via HTTP calls to TouchBistro itself
 - vendor-prefixed identifiers (`touchbistro_*`, `pos_parser`)
 
