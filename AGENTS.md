@@ -618,13 +618,23 @@ The loader lives in `src/barkeep/loader/` and is invoked after parsing.
   attachments through the loader. The parser stays unaware of email.
 - `attachments.extract_csv_attachments` accepts only `*.csv` filenames
   containing `SalesByMenuItem`; other attachments are ignored.
-- `imap.run_once` processes unread messages, marks messages with no report
-  attachments as seen, and only marks a message seen when all its report
-  attachments loaded without failure. Failures are recorded in
-  `core.ingest_log` and left unread for retry.
-- Configuration comes from `IMAP_HOST`, `IMAP_USER`, `IMAP_PASSWORD`,
-  `IMAP_MAILBOX` (see `.env.example`). Use an app password on a dedicated
-  mailbox; never commit credentials.
+- `imap.run_once` selects the configured mailbox/label and searches by
+  sender/subject/`SINCE` — **never** by read state. A report must still be found
+  after someone opens it in a mail client; duplicate protection comes from the
+  loader's content hash.
+- Messages without a report attachment are left untouched, including their
+  read/unread state. Never mark unrelated mail as seen.
+- A report message is marked `\Seen` only after all its attachments load
+  without failure. Failures are recorded in `core.ingest_log` and the message is
+  left unread for retry.
+- Use a dedicated label/folder (`IMAP_MAILBOX`, e.g. `SalesReports`) rather than
+  `INBOX`, so the poller only ever sees report mail.
+- Configuration comes from `IMAP_HOST`, `IMAP_USER` (the real account, not the
+  alias), `IMAP_PASSWORD`, `IMAP_MAILBOX`, optional `IMAP_SENDER` /
+  `IMAP_SUBJECT`, and `IMAP_SINCE_DAYS` (see `.env.example`). Use an app
+  password on a dedicated mailbox; never commit credentials.
+- The poller is a single pass (`run_once`). Schedule it externally — daily is
+  recommended so a late or missed report self-heals on the next run.
 
 ## 16. Explicitly out of scope
 
