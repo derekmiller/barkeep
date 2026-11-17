@@ -1,0 +1,482 @@
+# AGENTS.md — barkeep
+
+## 1. What this project is
+
+A library that parses TouchBistro "SalesByMenuItem" CSV exports into typed Python
+objects. It is the first stage of a pipeline:
+
+    TouchBistro scheduled report (email, CSV attachment)
+        -> parse_csv()                  <-- THIS PROJECT
+        -> Postgres
+        -> Metabase dashboards
+
+**Scope is strictly the parser.** No database, no IMAP, no filesystem watching,
+no scheduling, no HTTP. `parse_csv` must be a pure function.
+
+### Naming and layout
+
+The project is called **`barkeep`**. The parser is one component of it, so the
+importable package is named for the project, not the vendor. The TouchBistro
+format is confined to the parsing modules; it must not leak into package names,
+module names, or public API names.
+
+```
+barkeep/
+├── AGENTS.md
+├── pyproject.toml
+├── src/barkeep/
+│   ├── __init__.py
+│   ├── errors.py        # exception hierarchy
+│   ├── models.py        # ParseResult, SalesRow, SummaryRow
+│   ├── filename.py      # vendor filename contract -> venue + period
+│   ├── money.py         # Decimal parsing (comma-safe)
+│   ├── normalise.py     # item_key normalisation
+│   └── parse.py         # parse_csv()
+└── tests/
+    ├── fixtures/
+    │   ├── Example_Venue-SalesByMenuItem-2026-11-08-2026-11-14.csv
+    │   └── Example_Venue-SalesByMenuItem-2026-11-15-2026-11-15.csv
+    └── test_parse.py
+```
+
+Rules that follow from this:
+- Import path is `from barkeep.parse import parse_csv`.
+- Do not name anything `touchbistro_*`. Vendor-specific knowledge lives in the
+  behaviour of `filename.py` and `parse.py`, documented in this file — not in
+  identifiers.
+- Do not create a `pos_parser` package. Earlier discussion used that name; it is
+  superseded.
+- `pyproject.toml` project name is `barkeep`, package directory `src/barkeep/`.
+- Future components (loader, SQL views) live alongside as sibling packages
+  (`src/barkeep_loader/`, `sql/`). Do not scaffold them now — see section 13.
+
+## 2. Non-negotiable architecture rules
+
+- `parse_csv(data: bytes, filename: str) -> ParseResult` — pure. Same input,
+  same output, no side effects, no I/O, no global state, no clock reads.
+- Do **not** call `datetime.date.today()` or `datetime.now()` anywhere. Dates
+  come only from the filename.
+- Do **not** import any DB driver, network library, or scheduler.
+- Money and quantities are `decimal.Decimal`. **Never `float`** anywhere in this
+  project, including tests.
+- Return results; do not mutate inputs.
+- Raise a specific exception subclass on bad input. Never return `None` to
+  signal failure. Never silently skip a row that fails to parse.
+
+## 3. Filename contract
+
+    {venue}-SalesByMenuItem-{YYYY-MM-DD}-{YYYY-MM-DD}.csv
+
+Example:
+
+    Example_Venue-SalesByMenuItem-2026-11-08-2026-11-14.csv
+    -> venue = "Example_Venue"
+    -> period_start = 2026-11-08
+    -> period_end   = 2026-11-14
+
+Rules:
+- The CSV contains **no date column**. Period comes only from the filename.
+- If the filename does not match, raise `FilenameParseError`. Do not guess.
+- `period_end` may equal `period_start` (a single-day report). That is valid.
+- Compute `days_covered = (period_end - period_start).days + 1`.
+- Do not validate that `days_covered == 7`. Reports of other lengths are legal
+  and must parse.
+
+## 4. CSV format
+
+- UTF-8, no BOM, LF line endings, comma-delimited, fields quoted.
+- Three header layouts are accepted. The header must match one of them exactly;
+  anything else raises `FormatError`. Column names have no leading/trailing
+  whitespace.
+
+  **Standard (14 columns):**
+
+  ```
+  Menu Item
+  Sales Category
+  Menu Group
+  Menu Item Void Quantity
+  Voids
+  Menu Item Quantity
+  Gross Sales
+  Item Discounts
+  Bill Discounts
+  Net Sales
+  Menu Item Quantity (Refunds)
+  Refund Amount (Net Sales)
+  Sales Percentage
+  Total Tax
+  ```
+
+  **Tax-split (16 columns):** identical to the standard layout, except the
+  final `Total Tax` column is replaced by `Tax 1`, `Tax 2`, `Tax 3`.
+
+  **Legacy (15 columns):**
+
+  ```
+  Menu Item
+  Sales Category
+  Menu Group
+  Menu Item Void Quantity
+  Voids
+  Menu Item Quantity
+  Gross Sales
+  Discounts
+  Net Sales
+  Menu Item Quantity (Refunds)
+  Refund Amount (Net Sales)
+  Sales Percentage
+  Tax 1
+  Tax 2
+  Tax 3
+  ```
+
+- In the legacy layout, monetary cells are `$`-prefixed and negative amounts
+  appear as `-$214.25`. Strip `$` and thousands separators before `Decimal`.
+- In the legacy layout, `Discounts` is a combined total: store it in
+  `item_discounts`, set `bill_discounts = 0.00`, and record a warning in
+  `ParseResult.warnings`.
+- `sales_category` may carry surrounding whitespace in legacy files; trim it.
+  `item_name` and `menu_group` stay verbatim.
+- Validate the header against an accepted layout. If no layout matches, raise
+  `FormatError` — do not index positionally on faith.
+- `Menu Group` **can contain an embedded newline** inside its quoted field,
+  e.g. `"Important" Beers &\nSeltzers`. Read with the `csv` module.
+  **Never `split(",")`, never `splitlines()` on the raw text.**
+
+## 5. Hard invariants (each is a real observed defect)
+
+### 5.1 The summary row must be excluded
+The final row is a totals row labelled `REPORT SUMMARY (N entries)`, with blank
+`Sales Category` and `Menu Group`. Its numeric columns are **totals of all rows
+above it**.
+
+If you include it, every aggregate doubles exactly. This is the single most
+likely bug in this project.
+
+Detection (use both conditions):
+```
+row[0].startswith("REPORT SUMMARY")  or  (row[1].strip() == "" and row[2].strip() == "")
+```
+Keep the summary in `ParseResult.summary` (it is a useful cross-check), but it
+must never appear in `ParseResult.rows`.
+
+**Mandatory self-check:** `sum(row.units for row in result.rows)` must equal
+`result.summary.units`. If it does not, raise `IntegrityError`. This is your
+double-counting alarm — implement it, do not skip it.
+
+### 5.2 Thousands separators
+Summary-row values contain commas: `1,620.00`, `8,163.50`, `7,973.50`.
+`Decimal("1,620.00")` raises `InvalidOperation`. Strip commas before parsing.
+Body rows in the current fixtures have no commas, but strip unconditionally —
+do not special-case the summary row only.
+
+### 5.3 Pre-rounded percentage
+`Sales Percentage` is rounded per row and does **not** sum to 100:
+- daily summary: `100.00%`
+- weekly summary: `99.99%`
+
+Parse it, never validate it, never aggregate it. Shares must be recomputed from
+`Net Sales` if needed.
+
+### 5.4 Total Tax is always zero
+`Total Tax` is `0.00` on every row by design. TouchBistro excludes tax from
+this report. Do not treat this as "no tax was charged".
+
+### 5.5 Arithmetic identity to preserve
+For every body row in the standard and tax-split layouts:
+`Gross Sales - Item Discounts - Bill Discounts == Net Sales`.
+
+For every body row in the legacy layout (one combined discount column):
+`Gross Sales - Discounts == Net Sales`. The parser maps `Discounts` to
+`item_discounts` and sets `bill_discounts = 0.00`, so the same check applies.
+
+Assert it per row and raise `IntegrityError` on violation — if TouchBistro ever
+changes this, you want to know loudly.
+
+### 5.6 Refund and void columns
+`Menu Item Void Quantity`, `Voids`, `Menu Item Quantity (Refunds)`,
+`Refund Amount (Net Sales)`, and `Bill Discounts` are `0.00` in both current
+fixtures. Parse and store them anyway. Do not assume they are always zero, and
+do not drop the columns. The legacy layout has no separate `Bill Discounts`
+column; its combined `Discounts` is handled per §4.
+
+## 6. Units semantics
+
+`Menu Item Quantity` is **gross units** — units sold, before refunds. This is
+confirmed by the system owner, not inferred. Consequence:
+
+- Do **not** subtract refunds from `Menu Item Quantity`.
+- If net units are ever needed, they must be derived separately and labelled
+  `units_net`, never silently.
+- Document the gross semantics in the `SalesRow` docstring.
+
+`Net Sales` is a *revenue* figure (after discounts). It is **not** the unit
+count. Units and revenue legitimately diverge: `Zero Net Item` has `units == 1`
+and `net_sales == 0.00` (fully comped, `Item Discounts == 8.00`). Never infer one
+from the other, and never divide by units without handling zero.
+
+## 7. Item identity and renaming
+
+**This is the subtlest area in the project. Read carefully.**
+
+### 7.1 Names are not stable identifiers
+Menu items **can be renamed mid-history** (confirmed). Over a two-year backfill,
+`"Alpha Lager"` may have been called something else in 2024. The export contains
+**no item ID column** — only the display name.
+
+Therefore: `item_name` is a *display string*, not an identity. A parser cannot
+resolve renames, and must not pretend to.
+
+### 7.2 The same name appears in multiple menu groups
+An item is reported once per `Menu Group` it was rung against. Observed in the
+weekly fixture — 2 names, 10 rows, 8 distinct names:
+
+| Name | Rows | Total units |
+|---|---|---|
+| Alpha Lager | 2 | 15 |
+| Gamma Soda | 2 | 12 |
+
+The natural key for a row is `(item_name, sales_category, menu_group)` — verified
+unique in both files (10/10 and 4/4). Do not deduplicate by name.
+
+### 7.3 Do NOT auto-merge or fuzzy-match names
+Fuzzy matching here is actively destructive. These are **different products**:
+
+- `Rye's Bitter` and `Rye’s - Pint` — different items, and the
+  first uses a straight apostrophe while the second uses a curly one (U+2019).
+- `Alpha Lager`, `Alpha Lager - Pint`, `Alpha Lager - Pitcher`, and
+  `Alpha Lager - Tower` — four distinct products.
+- `Gamma Ale` and `Gamma Soda`.
+- `Delta Shot` and `Delta Shot Reserve` (both `Spirits`).
+
+Never merge two names because they look similar. Never strip size suffixes.
+
+### 7.4 What the parser MUST do instead
+Emit both:
+- `item_name` — verbatim, exactly as in the file, no case changes.
+- `item_key` — a normalised comparison key: Unicode **NFC**; curly apostrophes
+  (U+2019, U+2018) mapped to ASCII `'`; whitespace collapsed and trimmed;
+  otherwise unchanged. Do **not** lowercase (it risks merging distinct products
+  on case-sensitive menus) and do not remove punctuation.
+
+Apply the same normalisation to `menu_group` (it may contain a newline — replace
+runs of whitespace, including newlines, with a single space in the *key* only;
+keep the raw value verbatim in `menu_group`).
+
+Rename resolution is **out of scope for the parser**. It will be handled later
+by a human-curated alias table mapping historical names to a current product.
+The parser's only obligation is to record raw names faithfully and provide a
+consistent key.
+
+### 7.5 Non-ASCII names are expected
+Observed: `Café Blanco` (U+00E9), `Rye’s - Pint` (U+2019).
+
+`item_key` is a **comparison key, not an ASCII slug**. It normalises apostrophe
+variants and whitespace only. It must **not** strip accents and must **not** be
+forced to pure ASCII:
+
+- `Café Blanco` -> `item_key == "Café Blanco"` (the é is preserved)
+- `Rye’s - Pint` -> `item_key == "Rye's - Pint"` (apostrophe only)
+
+Stripping accents would risk conflating genuinely different menu items. If an
+ASCII-only form is ever needed for search, that is a display concern for a later
+stage, not the parser's job.
+
+## 8. `menu_group` is unreliable
+
+`menu_group` reflects how staff rang the item, not what it is. Non-alcoholic
+items are routinely filed under spirits:
+
+- `Gamma Soda` under `Spirits - Tequila`, `Spirits - Whiskey`, and `Wells`
+- `Alpha Lager` under `Non-Alcoholic`, `Spirits - Tequila`, and `Wells`
+- `Delta Shot` under `Spirits - Vodka`, `Spirits - Rum`, and `Non-Alcoholic`
+- `Zero Net Item` under `Spirits - Whiskey`
+
+Consequences:
+- Do not validate category against menu group, and do not derive a hierarchy
+  from `menu_group`.
+- Do not build any rollup on `menu_group`.
+- Store it raw; treat it as descriptive metadata only.
+
+`sales_category` is clean and consistent — always one of `Alcohol`,
+`NA Drinks`, `Food`. Use this for grouping.
+
+## 9. Data model
+
+```python
+@dataclass(frozen=True)
+class SalesRow:
+    item_name: str        # verbatim as exported
+    item_key: str         # normalised lookup key
+    sales_category: str   # Alcohol | NA Drinks | Food
+    menu_group: str       # raw, may contain newline; unreliable
+    units: Decimal        # Menu Item Quantity, GROSS units
+    gross_sales: Decimal
+    item_discounts: Decimal
+    bill_discounts: Decimal
+    net_sales: Decimal
+
+@dataclass(frozen=True)
+class SummaryRow:
+    label: str
+    units: Decimal
+    gross_sales: Decimal
+    item_discounts: Decimal
+    bill_discounts: Decimal
+    net_sales: Decimal
+
+@dataclass(frozen=True)
+class ParseResult:
+    venue: str
+    period_start: date
+    period_end: date
+    days_covered: int
+    rows: list[SalesRow]
+    summary: SummaryRow | None
+    warnings: list[str]
+```
+
+`days_covered` is derived, not stored in the CSV.
+
+For legacy 15-column files, `item_discounts` holds the combined `Discounts`
+column and `bill_discounts` is `0.00`; `ParseResult.warnings` records that the
+split is unavailable. For tax-split files the three tax columns are parsed but
+not represented in the model.
+
+## 10. Fixtures and golden values
+
+Two synthetic fixtures live in `tests/fixtures/`. They contain no real sales
+data; every name, date, and amount is fabricated. All numbers below are the
+acceptance criteria.
+
+### Fixture A — `Example_Venue-SalesByMenuItem-2026-11-08-2026-11-14.csv`
+
+| Field | Value |
+|---|---|
+| venue | `Example_Venue` |
+| period_start | `2026-11-08` (Sunday) |
+| period_end | `2026-11-14` (Saturday) |
+| days_covered | `7` |
+| body rows | `10` |
+| summary rows excluded | `1` |
+| distinct item names | `8` |
+| sum(units) | `Decimal("55.00")` |
+| sum(gross_sales) | `Decimal("1502.56")` |
+| sum(item_discounts) | `Decimal("13.00")` |
+| sum(bill_discounts) | `Decimal("0.00")` |
+| sum(net_sales) | `Decimal("1489.56")` |
+
+Row-level spot checks (exact):
+
+| item_name | units | net_sales |
+|---|---|---|
+| `Epsilon Combo` | `1.00` | `1234.56` |
+| `Delta Shot` | `20.00` | `100.00` |
+| `Beta Wine` | `2.00` | `25.00` |
+| `Rye’s - Pint` | `3.00` | `10.00` |
+| `Zero Net Item` | `1.00` | `0.00` |
+
+Grouped-by-name aggregates (duplicate menu groups):
+
+| item_name | rows | sum(units) |
+|---|---|---|
+| `Alpha Lager` | 2 | `15.00` |
+| `Gamma Soda` | 2 | `12.00` |
+
+### Fixture B — `Example_Venue-SalesByMenuItem-2026-11-15-2026-11-15.csv`
+
+| Field | Value |
+|---|---|
+| venue | `Example_Venue` |
+| period_start | `2026-11-15` |
+| period_end | `2026-11-15` |
+| days_covered | **`1`** (single day — must not be assumed to be a week) |
+| body rows | `4` |
+| summary rows excluded | `1` |
+| distinct item names | `3` |
+| sum(units) | `Decimal("8.00")` |
+| sum(gross_sales) | `Decimal("31.00")` |
+| sum(item_discounts) | `Decimal("0.00")` |
+| sum(net_sales) | `Decimal("31.00")` |
+
+Row spot checks:
+
+| item_name | units | net_sales |
+|---|---|---|
+| `Alpha Lager` | `2.00` | `10.00` |
+| `Delta Shot` | `3.00` | `9.00` |
+
+Grouped aggregates:
+
+| item_name | rows | sum(units) |
+|---|---|---|
+| `Gamma Soda` | 2 | `3.00` |
+
+### Cross-fixture facts
+- Weekly `Alpha Lager` = `15` units; daily `Alpha Lager` = `2`.
+- Weekly `Gamma Soda` = `12` units; daily `Gamma Soda` = `3`.
+- Both files share byte-identical headers (14 columns).
+- The `Epsilon Combo` body row uses thousands separators (`1,234.56`), as do
+  the summary totals (`1,502.56`, `1,489.56`).
+
+## 11. Testing requirements
+
+- Tests first: write `tests/test_parse.py` before the implementation.
+- Use `pytest`. Use `Decimal`, never `float`, in assertions.
+- Compare `Decimal("1502.56") == Decimal("1502.56")` — note
+  `Decimal("1502.56") == Decimal("1502.560")` is also `True`; do not rely on
+  string formatting for equality.
+- Cover at minimum:
+  1. Both fixtures parse without error; all golden values above match.
+  2. Summary row excluded — assert `len(result.rows)` and that the double-count
+     does not occur.
+  3. `days_covered == 7` and `days_covered == 1` respectively.
+  4. `menu_group` containing an embedded newline parses as one field; the value
+     `"Important" Beers &` + newline + `Seltzers` appears intact on a
+     `Gamma Soda` row.
+  5. Thousands separators parse: `Decimal("1,234.56")` → `Decimal("1234.56")`.
+  6. `Zero Net Item` keeps `units == Decimal("1.00")` and
+     `net_sales == Decimal("0.00")`.
+  7. `item_key` replaces U+2019 with ASCII `'` in `Rye’s - Pint`, while
+     `item_name` preserves the original codepoint. Assert the key is
+     `"Rye's - Pint"`. Separately assert `Café Blanco` keeps its é in
+     `item_key` (accents are not stripped).
+  8. Duplicate names are preserved, not merged — `Alpha Lager` yields 2 rows
+     totalling `15.00` units and `Gamma Soda` yields 2 rows totalling `12.00`.
+  9. A malformed filename raises `FilenameParseError`.
+  10. A row violating `gross - item_disc - bill_disc == net` raises
+      `IntegrityError`.
+  11. Both legacy layouts parse: the 16-column tax-split header and the
+      15-column combined-`Discounts` header. The latter records a warning and
+      maps `Discounts` to `item_discounts` with `bill_discounts == 0.00`.
+
+- Run the suite after every change and report actual output. Do not claim
+  passing tests without pasting the run.
+
+## 12. Style
+
+- Python 3.11+. Type hints everywhere. `from __future__ import annotations`.
+- `dataclasses` as specified. Frozen where given.
+- Docstrings on public functions and dataclasses. State gross-units semantics in
+  `SalesRow`.
+- Exceptions in `errors.py`: `ParseError` (base), `FilenameParseError`,
+  `FormatError`, `IntegrityError`, `RowParseError`.
+- Small, pure helpers in separate modules under `src/barkeep/`: `filename.py`,
+  `money.py`, `normalise.py`, `parse.py`, `models.py`, `errors.py`.
+- No new third-party dependencies. Standard library only.
+
+## 13. Explicitly out of scope
+
+Do not write, suggest, or scaffold any of:
+- database connections, schemas, `INSERT`/upsert logic
+- IMAP, email, attachment extraction
+- file watching, cron, `systemd`, schedulers
+- Metabase, dashboards, SQL views
+- rename detection, fuzzy matching, alias tables
+- CLI entry points or argument parsing
+- backfilling, HTTP calls to TouchBistro
+- `src/barkeep_loader/`, `sql/`, or any sibling package for later pipeline stages
+- vendor-prefixed identifiers (`touchbistro_*`, `pos_parser`)
+
+If a task seems to need one of these, stop and ask.

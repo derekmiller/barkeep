@@ -1,0 +1,4 @@
+"Menu Item","Sales Category","Menu Group","Menu Item Void Quantity","Voids","Menu Item Quantity","Gross Sales","Discounts","Net Sales","Menu Item Quantity (Refunds)","Refund Amount (Net Sales)","Sales Percentage","Tax 1","Tax 2","Tax 3"
+"Legacy Lager","Alcohol ","Beers","0.00","$0.00","3.00","$15.00","$3.00","$12.00","0.00","$0.00","80.00%","$0.00","$0.00","$0.00"
+"Legacy Refund","NA Drinks","Not Applicable","1.00","$5.00","2.00","$10.00","$0.00","$10.00","-1.00","-$5.00","20.00%","$0.00","$0.00","$0.00"
+"REPORT SUMMARY (2 entries)","","","1.00","$5.00","5.00","$25.00","$3.00","$22.00","-1.00","-$5.00","100.00%","$0.00","$0.00","$0.00"
