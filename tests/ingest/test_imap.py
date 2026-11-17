@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import ssl
 from datetime import date
 from email.message import EmailMessage
 
 import pytest
 
 from barkeep.ingest import imap
+from barkeep.ingest.attachments import sender_matches
 from barkeep.ingest.imap import ImapConfig, build_search_criteria, run_once
 from barkeep.loader import LoadResult, LoaderError
 
@@ -19,8 +21,10 @@ def fake_imap(monkeypatch):
         messages: dict[bytes, bytes] = {}
         select_status = "OK"
 
-        def __init__(self, host: str) -> None:
+        def __init__(self, host: str, *, ssl_context=None, timeout=None) -> None:
             self.host = host
+            self.ssl_context = ssl_context
+            self.timeout = timeout
             self.selected: str | None = None
             self.search_args: tuple[str | None, tuple[str, ...]] | None = None
             self.store_calls: list[tuple[bytes, str, str]] = []
@@ -68,13 +72,15 @@ def _config(**overrides) -> ImapConfig:
 
 def _raw_email_without_report() -> bytes:
     message = EmailMessage()
+    message["From"] = "reports@touchbistro.com"
     message["Subject"] = "Unrelated"
     message.set_content("Nothing to see here.")
     return message.as_bytes()
 
 
-def _raw_email_with_report() -> bytes:
+def _raw_email_with_report(from_addr: str = "reports@touchbistro.com") -> bytes:
     message = EmailMessage()
+    message["From"] = from_addr
     message["Subject"] = "SalesByMenuItem"
     message.set_content("Attached.")
     message.add_attachment(
@@ -105,6 +111,64 @@ def test_search_criteria_use_sender_subject_and_since() -> None:
 
 def test_search_criteria_default_to_all() -> None:
     assert build_search_criteria() == ["ALL"]
+
+
+def test_sender_matches_full_address_and_domain() -> None:
+    raw = _raw_email_with_report("Reports@TouchBistro.com")
+
+    assert sender_matches(raw, "reports@touchbistro.com")
+    assert sender_matches(raw, "touchbistro.com")
+    assert not sender_matches(raw, "evil@touchbistro.com")
+    assert not sender_matches(raw, "attacker.com")
+    assert not sender_matches(raw, "")
+
+
+def test_connection_uses_a_verifying_tls_context(fake_imap) -> None:
+    fake_imap.messages = {b"1": _raw_email_without_report()}
+
+    run_once(object(), _config(), today=date(2026, 11, 15))  # type: ignore[arg-type]
+
+    instance = fake_imap.instances[0]
+    assert instance.ssl_context is not None
+    assert instance.ssl_context.verify_mode == ssl.CERT_REQUIRED
+    assert instance.ssl_context.check_hostname is True
+    assert instance.timeout is not None
+
+
+def test_run_once_requires_a_sender() -> None:
+    with pytest.raises(LoaderError, match="IMAP_SENDER"):
+        run_once(object(), _config(sender=None))  # type: ignore[arg-type]
+
+
+def test_run_once_skips_report_from_wrong_sender(fake_imap, monkeypatch) -> None:
+    fake_imap.messages = {b"1": _raw_email_with_report("attacker@example.com")}
+
+    def fail(*args, **kwargs):
+        raise AssertionError("load_file must not be called")
+
+    monkeypatch.setattr(imap, "load_file", fail)
+
+    results = run_once(object(), _config(), today=date(2026, 11, 15))  # type: ignore[arg-type]
+
+    assert results == []
+    instance = fake_imap.instances[0]
+    assert instance.store_calls == []
+
+
+def test_extraction_failure_does_not_abort_the_run(fake_imap, monkeypatch) -> None:
+    fake_imap.messages = {b"1": _raw_email_with_report()}
+    monkeypatch.setattr(imap, "record_failure", lambda *args, **kwargs: None)
+
+    def boom(raw_email):
+        raise LookupError("unknown charset")
+
+    monkeypatch.setattr(imap, "extract_csv_attachments", boom)
+
+    results = run_once(object(), _config(), today=date(2026, 11, 15))  # type: ignore[arg-type]
+
+    assert [result.status for result in results] == ["failed"]
+    instance = fake_imap.instances[0]
+    assert instance.store_calls == []
 
 
 def test_run_once_never_marks_non_report_mail_seen(fake_imap) -> None:

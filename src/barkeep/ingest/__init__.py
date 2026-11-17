@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .attachments import extract_csv_attachments, is_sales_report
+from .attachments import extract_csv_attachments, is_sales_report, sender_matches
 from .imap import ImapConfig, build_search_criteria, run_once
 
 __all__ = [
@@ -11,4 +11,5 @@ __all__ = [
     "extract_csv_attachments",
     "is_sales_report",
     "run_once",
+    "sender_matches",
 ]

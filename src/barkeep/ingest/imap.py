@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import imaplib
 import os
+import ssl
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -14,7 +15,10 @@ from barkeep.loader.db import connect
 from barkeep.loader.errors import LoaderError
 from barkeep.loader.secrets import read_secret_file
 
-from .attachments import extract_csv_attachments
+from .attachments import extract_csv_attachments, sender_matches
+
+# Fail fast instead of hanging the scheduled run on a dead server.
+_IMAP_TIMEOUT_SECONDS = 60
 
 _MONTHS = (
     "Jan",
@@ -106,6 +110,13 @@ class ImapConfig:
                 "missing IMAP configuration: IMAP_PASSWORD or IMAP_PASSWORD_FILE"
             )
 
+        sender = (values["sender"] or "").strip()
+        if not sender:
+            raise LoaderError(
+                "missing IMAP configuration: IMAP_SENDER is required to "
+                "restrict which mail may be ingested"
+            )
+
         try:
             since_days = int(values["since_days"] or "21")
         except ValueError as exc:
@@ -120,7 +131,7 @@ class ImapConfig:
             user=values["user"] or "",
             password=password,
             mailbox=values["mailbox"] or "INBOX",
-            sender=values["sender"] or None,
+            sender=sender,
             subject=values["subject"] or None,
             since_days=since_days,
         )
@@ -143,14 +154,25 @@ def run_once(
     since = None
     if config.since_days > 0:
         since = (today or date.today()) - timedelta(days=config.since_days)
+
+    sender = (config.sender or "").strip()
+    if not sender:
+        raise LoaderError(
+            "IMAP_SENDER is required; refusing to ingest without a sender allowlist"
+        )
+
     criteria = build_search_criteria(
-        sender=config.sender,
+        sender=sender,
         subject=config.subject,
         since=since,
     )
 
     results: list[LoadResult] = []
-    client = imaplib.IMAP4_SSL(config.host)
+    client = imaplib.IMAP4_SSL(
+        config.host,
+        ssl_context=ssl.create_default_context(),
+        timeout=_IMAP_TIMEOUT_SECONDS,
+    )
 
     try:
         client.login(config.user, config.password)
@@ -180,7 +202,24 @@ def run_once(
             if raw_email is None:
                 continue
 
-            attachments = extract_csv_attachments(raw_email)
+            if not sender_matches(raw_email, sender):
+                # Spoofed or unexpected sender: leave the message untouched.
+                continue
+
+            try:
+                attachments = extract_csv_attachments(raw_email)
+            except Exception as exc:  # noqa: BLE001 - one message must not abort the run
+                label = f"message-{uid.decode('ascii', errors='replace')}"
+                record_failure(conn, label, f"attachment extraction failed: {exc}")
+                results.append(
+                    LoadResult(
+                        filename=label,
+                        status="failed",
+                        message=f"attachment extraction failed: {exc}",
+                    )
+                )
+                continue
+
             if not attachments:
                 # Not a report email: never change its flags.
                 continue

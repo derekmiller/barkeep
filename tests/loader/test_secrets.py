@@ -58,6 +58,7 @@ def test_imap_config_reads_password_file(
     monkeypatch.setenv("IMAP_HOST", "imap.example.com")
     monkeypatch.setenv("IMAP_USER", "owner@example.com")
     monkeypatch.setenv("IMAP_PASSWORD_FILE", str(path))
+    monkeypatch.setenv("IMAP_SENDER", "reports@touchbistro.com")
 
     config = ImapConfig.from_env()
 
@@ -72,6 +73,7 @@ def test_imap_config_requires_a_password(
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("IMAP_HOST", "imap.example.com")
     monkeypatch.setenv("IMAP_USER", "owner@example.com")
+    monkeypatch.setenv("IMAP_SENDER", "reports@touchbistro.com")
 
     with pytest.raises(LoaderError, match="IMAP_PASSWORD"):
         ImapConfig.from_env()

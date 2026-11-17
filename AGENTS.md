@@ -624,6 +624,12 @@ The loader lives in `src/barkeep/loader/` and is invoked after parsing.
   sender/subject/`SINCE` — **never** by read state. A report must still be found
   after someone opens it in a mail client; duplicate protection comes from the
   loader's content hash.
+- Connections use `ssl.create_default_context()`; never rely on `imaplib`'s
+  default context, which does not verify certificates.
+- `IMAP_SENDER` is required. It is both a server-side search filter and a
+  post-fetch From allowlist (full address, or a bare domain). Messages whose
+  From does not match are skipped untouched. This prevents unsolicited mail to
+  the alias from injecting or replacing reports.
 - Messages without a report attachment are left untouched, including their
   read/unread state. Never mark unrelated mail as seen.
 - A report message is marked `\Seen` only after all its attachments load
@@ -632,9 +638,10 @@ The loader lives in `src/barkeep/loader/` and is invoked after parsing.
 - Use a dedicated label/folder (`IMAP_MAILBOX`, e.g. `SalesReports`) rather than
   `INBOX`, so the poller only ever sees report mail.
 - Configuration comes from `IMAP_HOST`, `IMAP_USER` (the real account, not the
-  alias), `IMAP_PASSWORD` or `IMAP_PASSWORD_FILE`, `IMAP_MAILBOX`, optional
-  `IMAP_SENDER` / `IMAP_SUBJECT`, and `IMAP_SINCE_DAYS` (see `.env.example`).
-  Use an app password on a dedicated mailbox; never commit credentials.
+  alias), `IMAP_PASSWORD` or `IMAP_PASSWORD_FILE`, `IMAP_MAILBOX`, required
+  `IMAP_SENDER`, optional `IMAP_SUBJECT`, and `IMAP_SINCE_DAYS` (see
+  `.env.example`). Use an app password on a dedicated mailbox; never commit
+  credentials.
 - The poller is a single pass (`run_once`). Schedule it externally — daily is
   recommended so a late or missed report self-heals on the next run.
 

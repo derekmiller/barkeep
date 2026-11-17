@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from email import message_from_bytes
 from email.header import decode_header
+from email.utils import parseaddr
 
 
 def _decode_filename(value: str) -> str:
@@ -20,6 +21,26 @@ def _decode_filename(value: str) -> str:
 def is_sales_report(filename: str) -> bool:
     """Return whether ``filename`` looks like a SalesByMenuItem CSV export."""
     return filename.lower().endswith(".csv") and "salesbymenuitem" in filename.lower()
+
+
+def sender_matches(raw_email: bytes, expected: str) -> bool:
+    """Return whether the message ``From`` address matches ``expected``.
+
+    ``expected`` may be a full address (``reports@example.com``) or a bare
+    domain (``example.com``). An empty or missing ``From`` never matches.
+    """
+    expected = expected.strip().lower().lstrip("@")
+    if not expected:
+        return False
+
+    message = message_from_bytes(raw_email)
+    _, address = parseaddr(message.get("From", ""))
+    address = address.lower()
+    if not address:
+        return False
+    if "@" in expected:
+        return address == expected
+    return address.endswith("@" + expected)
 
 
 def extract_csv_attachments(raw_email: bytes) -> list[tuple[str, bytes]]:

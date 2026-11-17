@@ -28,9 +28,12 @@ The file is gitignored. Use a separate Google app password per environment
 ## Development (macOS)
 
 ```bash
-cp .env.example .env          # set IMAP_* and keep DATABASE_URL on localhost
+cp .env.example .env          # set IMAP_SENDER plus the other IMAP_* values
 docker compose -f compose.yaml -f compose.dev.yaml up -d db metabase
 ```
+
+`IMAP_SENDER` is required: it is the From allowlist that decides which mail may
+be ingested. Use TouchBistro's sending address, or a bare domain.
 
 Run a poll or a backfill on demand:
 
