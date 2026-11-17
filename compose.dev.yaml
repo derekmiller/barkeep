@@ -1,0 +1,9 @@
+# Development override for a workstation (e.g. macOS).
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d db metabase
+#
+# Production uses compose.yaml alone, which does not publish Postgres.
+services:
+  db:
+    ports:
+      - "5432:5432"

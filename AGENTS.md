@@ -644,9 +644,12 @@ Deployment target is an always-on Linux host running Docker Compose.
 
 - `Dockerfile` installs the package with the `loader` extra, copies `sql/` and
   `scripts/`, sets `BARKEEP_SQL_DIR=/app/sql`, and runs as an unprivileged user.
-- `compose.yaml` keeps `db` and `metabase` in the default profile and puts
-  `migrate`, `ingest`, and `backfill` behind the `ingest` profile, so
+- `compose.yaml` is production-shaped: `db` publishes no port, `metabase` is
+  bound to loopback and stores its app data in the `metabase` database, and
+  `migrate`, `ingest`, and `backfill` sit behind the `ingest` profile, so
   `docker compose up -d` starts only the database and Metabase.
+- `compose.dev.yaml` is a workstation override that publishes Postgres for
+  host-run tools and tests. Production uses `compose.yaml` alone.
 - `ingest` runs migrations then one poll pass and exits. Trigger it daily from a
   host timer; `deploy/barkeep-ingest.service` and `.timer` are samples. Do not
   add an in-container sleep loop.
