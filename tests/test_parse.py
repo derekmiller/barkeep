@@ -456,6 +456,60 @@ def test_thousands_separator_in_body_units() -> None:
     assert row.net_sales == Decimal("1177.00")
 
 
+def test_sales_category_is_trimmed_and_unexpected_values_preserved() -> None:
+    def _row(name: str, category: str) -> list[str]:
+        return [
+            name,
+            category,
+            "Misc",
+            "0.00",
+            "0.00",
+            "1.00",
+            "10.00",
+            "0.00",
+            "0.00",
+            "10.00",
+            "0.00",
+            "0.00",
+            "100.00%",
+            "0.00",
+        ]
+
+    summary = [
+        "REPORT SUMMARY (3 entries)",
+        "",
+        "",
+        "0.00",
+        "0.00",
+        "3.00",
+        "30.00",
+        "0.00",
+        "0.00",
+        "30.00",
+        "0.00",
+        "0.00",
+        "100.00%",
+        "0.00",
+    ]
+    data = _csv_bytes(
+        [
+            HEADER,
+            _row("Item A", "Alcohol "),
+            _row("Item B", "UNCATEGORIZED"),
+            _row("Item C", "Merch"),
+            summary,
+        ]
+    )
+
+    result = parse_csv(data, WEEKLY_FILENAME)
+
+    assert [row.sales_category for row in result.rows] == [
+        "Alcohol",
+        "UNCATEGORIZED",
+        "Merch",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Legacy layouts: 16-column tax split and 15-column combined discounts.
 # ---------------------------------------------------------------------------

@@ -139,8 +139,9 @@ Rules:
 - In the legacy layout, `Discounts` is a combined total: store it in
   `item_discounts`, set `bill_discounts = 0.00`, and record a warning in
   `ParseResult.warnings`.
-- `sales_category` may carry surrounding whitespace in legacy files; trim it.
-  `item_name` and `menu_group` stay verbatim.
+- `sales_category` may carry surrounding whitespace in any layout (observed in
+  both legacy and current files); trim it. `item_name` and `menu_group` stay
+  verbatim.
 - Validate the header against an accepted layout. If no layout matches, raise
   `FormatError` — do not index positionally on faith.
 - `Menu Group` **can contain an embedded newline** inside its quoted field,
@@ -304,8 +305,11 @@ Consequences:
 - Do not build any rollup on `menu_group`.
 - Store it raw; treat it as descriptive metadata only.
 
-`sales_category` is clean and consistent — always one of `Alcohol`,
-`NA Drinks`, `Food`. Use this for grouping.
+`sales_category` is usually one of `Alcohol`, `NA Drinks`, or `Food`, but it is
+not a closed set. Current exports also contain `UNCATEGORIZED`, `Merch`, and
+values with trailing whitespace such as `"Alcohol "`. Trim the value and store
+it as-is; do not reject or remap unknown categories. Use it for grouping, since
+it is still far more reliable than `menu_group`.
 
 ## 9. Data model
 
@@ -314,7 +318,7 @@ Consequences:
 class SalesRow:
     item_name: str        # verbatim as exported
     item_key: str         # normalised lookup key
-    sales_category: str   # Alcohol | NA Drinks | Food
+    sales_category: str   # trimmed; usually Alcohol | NA Drinks | Food, but open
     menu_group: str       # raw, may contain newline; unreliable
     units: Decimal        # Menu Item Quantity, GROSS units
     gross_sales: Decimal
@@ -487,6 +491,9 @@ The refund/void row still has gross units: `Menu Item Quantity` is `24.00`, not
       on the gitignored corpus: nonzero voids/refunds do not reduce gross units,
       a negative `net_sales` row parses, and a thousands separator in a
       body-row unit count parses.
+  13. `sales_category` whitespace is trimmed in every layout, and unexpected
+      values such as `UNCATEGORIZED` and `Merch` are preserved rather than
+      rejected or remapped.
 
 - Run the suite after every change and report actual output. Do not claim
   passing tests without pasting the run.
