@@ -35,7 +35,10 @@ barkeep/
 └── tests/
     ├── fixtures/
     │   ├── Example_Venue-SalesByMenuItem-2026-11-08-2026-11-14.csv
-    │   └── Example_Venue-SalesByMenuItem-2026-11-15-2026-11-15.csv
+    │   ├── Example_Venue-SalesByMenuItem-2026-11-15-2026-11-15.csv
+    │   ├── Example_Venue-SalesByMenuItem-2026-11-16-2026-11-16.csv
+    │   ├── Test_Venue-SalesByMenuItem-2024-06-28-2024-07-04.csv
+    │   └── Test_Venue-SalesByMenuItem-2025-09-28-2025-10-04.csv
     └── test_parse.py
 ```
 
@@ -196,10 +199,12 @@ changes this, you want to know loudly.
 
 ### 5.6 Refund and void columns
 `Menu Item Void Quantity`, `Voids`, `Menu Item Quantity (Refunds)`,
-`Refund Amount (Net Sales)`, and `Bill Discounts` are `0.00` in both current
-fixtures. Parse and store them anyway. Do not assume they are always zero, and
-do not drop the columns. The legacy layout has no separate `Bill Discounts`
-column; its combined `Discounts` is handled per §4.
+`Refund Amount (Net Sales)`, and `Bill Discounts` are `0.00` in the main weekly
+and daily fixtures, but they are **not** always zero in real exports: the
+edge-case fixture carries nonzero voids and refunds, and the corpus scan found
+hundreds of such rows. Parse and store them anyway. Do not assume they are
+always zero, and do not drop the columns. The legacy layout has no separate
+`Bill Discounts` column; its combined `Discounts` is handled per §4.
 
 ## 6. Units semantics
 
@@ -413,6 +418,34 @@ Grouped aggregates:
 |---|---|---|
 | `Gamma Soda` | 2 | `3.00` |
 
+### Edge-case fixture — `Example_Venue-SalesByMenuItem-2026-11-16-2026-11-16.csv`
+
+This fixture exists so the real-export edge cases discovered by the corpus scan
+are covered by committed tests instead of only by the local `data/raw/` corpus.
+
+| Field | Value |
+|---|---|
+| venue | `Example_Venue` |
+| period_start / period_end | `2026-11-16` |
+| days_covered | `1` |
+| body rows | `3` |
+| distinct item names | `3` |
+| sum(units) | `Decimal("1203.00")` |
+| sum(gross_sales) | `Decimal("1274.00")` |
+| sum(item_discounts) | `Decimal("19.50")` |
+| sum(net_sales) | `Decimal("1254.50")` |
+
+Rows exercise:
+
+| item_name | units | net_sales | Edge case |
+|---|---|---|---|
+| `Alpha Lager` | `24.00` | `79.50` | nonzero voids (`7.00` / `24.50`) and refunds (`-1.00` / `-3.50`) |
+| `Beta Wine` | `2.00` | `-2.00` | discounts exceed gross sales, so net is negative |
+| `Gamma Soda` | `1177.00` | `1177.00` | thousands separator in a body-row unit count (`1,177.00`) |
+
+The refund/void row still has gross units: `Menu Item Quantity` is `24.00`, not
+`23.00`.
+
 ### Cross-fixture facts
 - Weekly `Alpha Lager` = `15` units; daily `Alpha Lager` = `2`.
 - Weekly `Gamma Soda` = `12` units; daily `Gamma Soda` = `3`.
@@ -450,6 +483,10 @@ Grouped aggregates:
   11. Both legacy layouts parse: the 16-column tax-split header and the
       15-column combined-`Discounts` header. The latter records a warning and
       maps `Discounts` to `item_discounts` with `bill_discounts == 0.00`.
+  12. The edge-case fixture covers real-export observations that must not rely
+      on the gitignored corpus: nonzero voids/refunds do not reduce gross units,
+      a negative `net_sales` row parses, and a thousands separator in a
+      body-row unit count parses.
 
 - Run the suite after every change and report actual output. Do not claim
   passing tests without pasting the run.

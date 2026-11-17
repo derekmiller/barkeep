@@ -1,0 +1,5 @@
+"Menu Item","Sales Category","Menu Group","Menu Item Void Quantity","Voids","Menu Item Quantity","Gross Sales","Item Discounts","Bill Discounts","Net Sales","Menu Item Quantity (Refunds)","Refund Amount (Net Sales)","Sales Percentage","Total Tax"
+"Alpha Lager","Alcohol","On Tap","7.00","24.50","24.00","83.00","3.50","0.00","79.50","-1.00","-3.50","6.34%","0.00"
+"Beta Wine","Alcohol","Wine","0.00","0.00","2.00","14.00","16.00","0.00","-2.00","0.00","0.00","-0.16%","0.00"
+"Gamma Soda","NA Drinks","Non-Alcoholic","0.00","0.00","1,177.00","1,177.00","0.00","0.00","1,177.00","0.00","0.00","93.82%","0.00"
+"REPORT SUMMARY (3 entries)","","","7.00","24.50","1,203.00","1,274.00","19.50","0.00","1,254.50","-1.00","-3.50","100.00%","0.00"

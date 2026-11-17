@@ -27,6 +27,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 WEEKLY_FILENAME = "Example_Venue-SalesByMenuItem-2026-11-08-2026-11-14.csv"
 DAILY_FILENAME = "Example_Venue-SalesByMenuItem-2026-11-15-2026-11-15.csv"
+EDGE_FILENAME = "Example_Venue-SalesByMenuItem-2026-11-16-2026-11-16.csv"
 LEGACY_FILENAME = "Test_Venue-SalesByMenuItem-2024-06-28-2024-07-04.csv"
 TAX_SPLIT_FILENAME = "Test_Venue-SalesByMenuItem-2025-09-28-2025-10-04.csv"
 
@@ -401,6 +402,58 @@ def test_missing_summary_row_yields_none() -> None:
     assert result.summary is None
     assert len(result.rows) == 1
     assert result.rows[0].units == Decimal("1.00")
+
+
+# ---------------------------------------------------------------------------
+# Edge cases observed in real exports, kept as a committed fixture so they do
+# not depend on the gitignored corpus in data/raw.
+# ---------------------------------------------------------------------------
+
+
+def test_edge_case_fixture_parses() -> None:
+    result = _parse(EDGE_FILENAME)
+
+    assert result.venue == "Example_Venue"
+    assert result.days_covered == 1
+    assert len(result.rows) == 3
+
+    assert sum(row.units for row in result.rows) == Decimal("1203.00")
+    assert sum(row.gross_sales for row in result.rows) == Decimal("1274.00")
+    assert sum(row.item_discounts for row in result.rows) == Decimal("19.50")
+    assert sum(row.net_sales for row in result.rows) == Decimal("1254.50")
+
+    assert result.summary is not None
+    assert result.summary.units == Decimal("1203.00")
+    assert result.summary.gross_sales == Decimal("1274.00")
+    assert result.summary.net_sales == Decimal("1254.50")
+
+
+def test_refunds_and_voids_do_not_reduce_gross_units() -> None:
+    result = _parse(EDGE_FILENAME)
+    row = _named(result, "Alpha Lager")[0]
+
+    # Menu Item Quantity is gross units; the refund and void columns are
+    # separate fields and must not change it.
+    assert row.units == Decimal("24.00")
+    assert row.gross_sales == Decimal("83.00")
+    assert row.net_sales == Decimal("79.50")
+
+
+def test_negative_net_sales_parses() -> None:
+    result = _parse(EDGE_FILENAME)
+    row = _named(result, "Beta Wine")[0]
+
+    # Discounts can exceed gross sales, producing a negative net.
+    assert row.item_discounts == Decimal("16.00")
+    assert row.net_sales == Decimal("-2.00")
+
+
+def test_thousands_separator_in_body_units() -> None:
+    result = _parse(EDGE_FILENAME)
+    row = _named(result, "Gamma Soda")[0]
+
+    assert row.units == Decimal("1177.00")
+    assert row.net_sales == Decimal("1177.00")
 
 
 # ---------------------------------------------------------------------------
