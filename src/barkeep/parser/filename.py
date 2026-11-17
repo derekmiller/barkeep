@@ -6,7 +6,7 @@ import re
 from datetime import date
 from pathlib import Path
 
-from barkeep.errors import FilenameParseError
+from .errors import FilenameParseError
 
 _FILENAME_RE = re.compile(
     r"^(?P<venue>.+)-SalesByMenuItem-"

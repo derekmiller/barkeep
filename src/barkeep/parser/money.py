@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 
-from barkeep.errors import RowParseError
+from .errors import RowParseError
 
 
 def parse_decimal(value: str) -> Decimal:

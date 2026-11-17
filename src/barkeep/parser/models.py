@@ -1,4 +1,4 @@
-"""Typed data model produced by :func:`barkeep.parse.parse_csv`."""
+"""Typed data model produced by :func:`barkeep.parser.parse_csv`."""
 
 from __future__ import annotations
 

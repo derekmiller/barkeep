@@ -24,13 +24,17 @@ from pathlib import Path
 
 import pytest
 
-from barkeep.errors import ParseError
-from barkeep.models import ParseResult
-from barkeep.money import parse_decimal, parse_percentage
-from barkeep.parse import ACCEPTED_HEADERS, parse_csv
+from barkeep.parser import (
+    ACCEPTED_HEADERS,
+    ParseError,
+    ParseResult,
+    parse_csv,
+    parse_decimal,
+    parse_percentage,
+)
 
 CORPUS_ENV = "BARKEEP_CORPUS"
-DEFAULT_CORPUS_DIR = Path(__file__).resolve().parent.parent / "data" / "raw"
+DEFAULT_CORPUS_DIR = Path(__file__).resolve().parents[2] / "data" / "raw"
 
 _corpus_value = os.environ.get(CORPUS_ENV)
 CORPUS_DIR = (

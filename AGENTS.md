@@ -2,36 +2,54 @@
 
 ## 1. What this project is
 
-A library that parses TouchBistro "SalesByMenuItem" CSV exports into typed Python
-objects. It is the first stage of a pipeline:
+A pipeline library that turns TouchBistro "SalesByMenuItem" CSV exports into
+queryable Postgres data:
 
     TouchBistro scheduled report (email, CSV attachment)
-        -> parse_csv()                  <-- THIS PROJECT
-        -> Postgres
-        -> Metabase dashboards
+        -> barkeep.ingest      IMAP poller
+        -> barkeep.parser      pure CSV -> typed objects
+        -> barkeep.loader      idempotent Postgres replace
+        -> analytics views
+        -> Metabase / any other BI tool
 
-**Scope is strictly the parser.** No database, no IMAP, no filesystem watching,
-no scheduling, no HTTP. `parse_csv` must be a pure function.
+The parser remains a pure function. Database, email, and scheduling concerns live
+in separate packages and never leak into `barkeep.parser`.
 
 ### Naming and layout
 
-The project is called **`barkeep`**. The parser is one component of it, so the
-importable package is named for the project, not the vendor. The TouchBistro
-format is confined to the parsing modules; it must not leak into package names,
-module names, or public API names.
+The project is called **`barkeep`**. The TouchBistro format is confined to the
+parsing modules; it must not leak into package names, module names, or public API
+names.
 
 ```
 barkeep/
 ├── AGENTS.md
 ├── pyproject.toml
+├── compose.yaml
+├── .env.example
+├── sql/
+│   ├── 001_schema.sql
+│   └── 002_views.sql
 ├── src/barkeep/
 │   ├── __init__.py
-│   ├── errors.py        # exception hierarchy
-│   ├── models.py        # ParseResult, SalesRow, SummaryRow
-│   ├── filename.py      # vendor filename contract -> venue + period
-│   ├── money.py         # Decimal parsing (comma-safe)
-│   ├── normalise.py     # item_key normalisation
-│   └── parse.py         # parse_csv()
+│   ├── parser/
+│   │   ├── __init__.py      # public API: parse_csv, models, errors
+│   │   ├── errors.py        # exception hierarchy
+│   │   ├── models.py        # ParseResult, SalesRow, SummaryRow
+│   │   ├── filename.py      # vendor filename contract -> venue + period
+│   │   ├── money.py         # Decimal parsing (comma-safe)
+│   │   ├── normalise.py     # item_key normalisation
+│   │   └── parse.py         # parse_csv()
+│   ├── loader/
+│   │   ├── __init__.py
+│   │   ├── db.py            # Postgres connection
+│   │   ├── errors.py        # LoaderError
+│   │   ├── load.py          # transactional replace + ingest log
+│   │   └── migrate.py       # numbered SQL migrations
+│   └── ingest/
+│       ├── __init__.py
+│       ├── attachments.py   # email -> CSV attachments
+│       └── imap.py          # IMAP poller
 └── tests/
     ├── fixtures/
     │   ├── Example_Venue-SalesByMenuItem-2026-11-08-2026-11-14.csv
@@ -39,32 +57,44 @@ barkeep/
     │   ├── Example_Venue-SalesByMenuItem-2026-11-16-2026-11-16.csv
     │   ├── Test_Venue-SalesByMenuItem-2024-06-28-2024-07-04.csv
     │   └── Test_Venue-SalesByMenuItem-2025-09-28-2025-10-04.csv
-    └── test_parse.py
+    ├── parser/
+    │   ├── test_parse.py
+    │   └── test_corpus.py
+    ├── loader/
+    │   └── test_load.py
+    └── ingest/
+        └── test_attachments.py
 ```
 
 Rules that follow from this:
-- Import path is `from barkeep.parse import parse_csv`.
+- Parser import path is `from barkeep.parser import parse_csv`.
+- `barkeep.parser` must not import `psycopg`, `barkeep.loader`, or
+  `barkeep.ingest`. Dependencies flow one way: parser <- loader <- ingest.
 - Do not name anything `touchbistro_*`. Vendor-specific knowledge lives in the
-  behaviour of `filename.py` and `parse.py`, documented in this file — not in
-  identifiers.
+  parser's behaviour, documented in this file — not in identifiers.
 - Do not create a `pos_parser` package. Earlier discussion used that name; it is
   superseded.
 - `pyproject.toml` project name is `barkeep`, package directory `src/barkeep/`.
-- Future components (loader, SQL views) live alongside as sibling packages
-  (`src/barkeep_loader/`, `sql/`). Do not scaffold them now — see section 13.
+- Database dependencies belong in the `loader` optional extra. The parser keeps
+  zero third-party dependencies.
 
 ## 2. Non-negotiable architecture rules
 
 - `parse_csv(data: bytes, filename: str) -> ParseResult` — pure. Same input,
   same output, no side effects, no I/O, no global state, no clock reads.
-- Do **not** call `datetime.date.today()` or `datetime.now()` anywhere. Dates
-  come only from the filename.
-- Do **not** import any DB driver, network library, or scheduler.
+- `barkeep.parser` must not import `psycopg`, `barkeep.loader`,
+  `barkeep.ingest`, any network library, or any scheduler. Purity applies to the
+  parser package; the loader and ingest packages are where I/O lives.
+- Do **not** call `datetime.date.today()` or `datetime.now()` anywhere in the
+  parser. Dates come only from the filename.
 - Money and quantities are `decimal.Decimal`. **Never `float`** anywhere in this
-  project, including tests.
+  project, including tests and database code.
 - Return results; do not mutate inputs.
 - Raise a specific exception subclass on bad input. Never return `None` to
   signal failure. Never silently skip a row that fails to parse.
+- Loading must be idempotent and transactional: identical bytes are skipped,
+  changed bytes for an existing period replace that period atomically, and a
+  failed load never leaves a partial report behind.
 
 ## 3. Filename contract
 
@@ -504,23 +534,107 @@ The refund/void row still has gross units: `Menu Item Quantity` is `24.00`, not
 - `dataclasses` as specified. Frozen where given.
 - Docstrings on public functions and dataclasses. State gross-units semantics in
   `SalesRow`.
-- Exceptions in `errors.py`: `ParseError` (base), `FilenameParseError`,
-  `FormatError`, `IntegrityError`, `RowParseError`.
-- Small, pure helpers in separate modules under `src/barkeep/`: `filename.py`,
+- Parser exceptions in `parser/errors.py`: `ParseError` (base),
+  `FilenameParseError`, `FormatError`, `IntegrityError`, `RowParseError`.
+  Loader failures use `loader.errors.LoaderError`.
+- Parser helpers are small and pure, under `src/barkeep/parser/`: `filename.py`,
   `money.py`, `normalise.py`, `parse.py`, `models.py`, `errors.py`.
-- No new third-party dependencies. Standard library only.
+- The parser has no third-party dependencies. `psycopg[binary]` is only in the
+  `loader`/`dev` optional extras and must never be imported by the parser.
+- Dependency direction is one-way: `parser <- loader <- ingest`. Do not import
+  upward.
 
-## 13. Explicitly out of scope
+## 13. Loader and idempotency
+
+The loader lives in `src/barkeep/loader/` and is invoked after parsing.
+
+### 13.1 Weekly-only ingestion
+
+- The parser must parse any valid report length (see §3). The **loader** is the
+  layer that enforces weekly-only ingestion.
+- `load_file(..., require_week=True)` (the default) rejects any report where
+  `days_covered != 7` or `period_start.weekday() != 6` (Sunday) with
+  `LoaderError`. Do not weaken this in the default path.
+
+### 13.2 Report identity and replacement
+
+- Report identity is `(venue, period_start, period_end)` — **not** the filename.
+- Hash the raw bytes with SHA-256. If a report already exists for the same
+  identity with the same hash, the load is a `skipped` no-op.
+- If the identity exists with a different hash (a re-export/revision), replace
+  that report atomically in one transaction: delete its `sales_row` and
+  `report_summary` rows, update the `report` metadata, then insert the new rows.
+- A brand-new identity is a `loaded` insert.
+- The whole load runs inside `with conn.transaction():`; a failure rolls back and
+  never leaves a partial period.
+- Re-loading the same period must never duplicate facts.
+
+### 13.3 Row identity
+
+- A row's natural key is
+  `(item_name, sales_category, menu_group)` within one report. This is enforced
+  by `core.sales_row` and by the parser, which raises `IntegrityError` on
+  duplicates within one file.
+
+### 13.4 Ingest log
+
+- `core.ingest_log` is append-only and records every attempt with status
+  `loaded`, `replaced`, `skipped`, or `failed`, plus filename, hash, parser
+  version, and optional message.
+- `load_directory` continues after a failure, recording each failure via
+  `record_failure` instead of aborting the batch.
+
+### 13.5 Migrations
+
+- Numbered SQL files in `sql/` applied in filename order by
+  `barkeep.loader.migrate`. Applied filenames are recorded in
+  `public.schema_migrations`; each file runs in its own transaction.
+- No Alembic. Add a new numbered `NNN_*.sql` file for each schema change; never
+  edit an already-applied migration.
+
+## 14. Schema and analytics views
+
+- `sql/001_schema.sql` defines `core.report`, `core.sales_row`,
+  `core.report_summary`, `core.ingest_log`, plus constraints:
+  - `report_period_unique (venue, period_start, period_end)`
+  - `sales_row_natural_key (report_id, item_name, sales_category, menu_group)`
+  - `sales_row_arithmetic` (`gross_sales - item_discounts - bill_discounts =
+    net_sales`)
+  - `days_covered = (period_end - period_start) + 1`
+- `sql/002_views.sql` defines the BI contract in the `analytics` schema:
+  `v_sales_current`, `v_weekly_totals`, `v_weekly_item`, `v_weekly_category`,
+  `v_item_catalog`.
+- BI tools (Metabase first) must consume `analytics.*` views only, never
+  `core.*` base tables. A read-only role for BI is preferred over granting write
+  access.
+- `v_sales_current` exposes both `menu_group_raw` (verbatim, may contain a
+  newline) and `menu_group` (whitespace runs collapsed for display). Keep both.
+- Dashboard logic must stay portable: any aggregation worth reusing belongs in a
+  view, not in a single BI tool's saved question.
+
+## 15. Email ingestion
+
+- `src/barkeep/ingest/` polls the report mailbox over IMAP and loads CSV
+  attachments through the loader. The parser stays unaware of email.
+- `attachments.extract_csv_attachments` accepts only `*.csv` filenames
+  containing `SalesByMenuItem`; other attachments are ignored.
+- `imap.run_once` processes unread messages, marks messages with no report
+  attachments as seen, and only marks a message seen when all its report
+  attachments loaded without failure. Failures are recorded in
+  `core.ingest_log` and left unread for retry.
+- Configuration comes from `IMAP_HOST`, `IMAP_USER`, `IMAP_PASSWORD`,
+  `IMAP_MAILBOX` (see `.env.example`). Use an app password on a dedicated
+  mailbox; never commit credentials.
+
+## 16. Explicitly out of scope
 
 Do not write, suggest, or scaffold any of:
-- database connections, schemas, `INSERT`/upsert logic
-- IMAP, email, attachment extraction
-- file watching, cron, `systemd`, schedulers
-- Metabase, dashboards, SQL views
-- rename detection, fuzzy matching, alias tables
-- CLI entry points or argument parsing
-- backfilling, HTTP calls to TouchBistro
-- `src/barkeep_loader/`, `sql/`, or any sibling package for later pipeline stages
+- rename detection, fuzzy matching, alias tables (handled later by a curated
+  alias table, outside this project)
+- Metabase dashboard definitions checked into this repo, or any BI-tool-specific
+  query logic that belongs in a view
+- file watching, cron, `systemd`, or scheduler definitions
+- backfilling via HTTP calls to TouchBistro itself
 - vendor-prefixed identifiers (`touchbistro_*`, `pos_parser`)
 
 If a task seems to need one of these, stop and ask.

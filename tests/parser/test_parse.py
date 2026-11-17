@@ -1,4 +1,4 @@
-"""Acceptance tests for ``barkeep.parse.parse_csv``.
+"""Acceptance tests for ``barkeep.parser.parse_csv``.
 
 These tests are written against the golden values in ``AGENTS.md`` section 10
 and the coverage requirements in section 11, with additional guard tests for the
@@ -14,16 +14,17 @@ from pathlib import Path
 
 import pytest
 
-from barkeep.errors import (
+from barkeep.parser import (
     FilenameParseError,
     FormatError,
     IntegrityError,
+    ParseResult,
     RowParseError,
+    SalesRow,
+    parse_csv,
 )
-from barkeep.models import ParseResult, SalesRow
-from barkeep.parse import parse_csv
 
-FIXTURES = Path(__file__).parent / "fixtures"
+FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
 WEEKLY_FILENAME = "Example_Venue-SalesByMenuItem-2026-11-08-2026-11-14.csv"
 DAILY_FILENAME = "Example_Venue-SalesByMenuItem-2026-11-15-2026-11-15.csv"
@@ -349,6 +350,23 @@ def test_row_arithmetic_violation_raises_integrity_error() -> None:
 
     with pytest.raises(IntegrityError):
         parse_csv(data, WEEKLY_FILENAME)
+
+
+def test_duplicate_natural_key_raises_integrity_error() -> None:
+    # Same item_name, sales_category, and menu_group twice in one report.
+    with pytest.raises(IntegrityError, match="duplicate natural key"):
+        parse_csv(
+            _csv_bytes([HEADER, VALID_ROW, VALID_ROW, VALID_SUMMARY]),
+            WEEKLY_FILENAME,
+        )
+
+
+def test_multiple_summary_rows_raise_integrity_error() -> None:
+    with pytest.raises(IntegrityError, match="more than one REPORT SUMMARY"):
+        parse_csv(
+            _csv_bytes([HEADER, VALID_ROW, VALID_SUMMARY, VALID_SUMMARY]),
+            WEEKLY_FILENAME,
+        )
 
 
 # ---------------------------------------------------------------------------

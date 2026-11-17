@@ -1,1 +1,5 @@
-"""barkeep — parse TouchBistro SalesByMenuItem CSV exports."""
+"""barkeep — TouchBistro sales parsing and loading pipeline."""
+
+from __future__ import annotations
+
+__version__ = "0.1.0"

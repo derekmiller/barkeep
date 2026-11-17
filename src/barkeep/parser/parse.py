@@ -7,11 +7,11 @@ import io
 from dataclasses import dataclass
 from decimal import Decimal
 
-from barkeep.errors import FormatError, IntegrityError, RowParseError
-from barkeep.filename import parse_filename
-from barkeep.models import ParseResult, SalesRow, SummaryRow
-from barkeep.money import parse_decimal, parse_percentage
-from barkeep.normalise import normalise_key
+from .errors import FormatError, IntegrityError, RowParseError
+from .filename import parse_filename
+from .models import ParseResult, SalesRow, SummaryRow
+from .money import parse_decimal, parse_percentage
+from .normalise import normalise_key
 
 
 @dataclass(frozen=True)
@@ -245,6 +245,7 @@ def parse_csv(data: bytes, filename: str) -> ParseResult:
 
     rows: list[SalesRow] = []
     summary: SummaryRow | None = None
+    seen_keys: dict[tuple[str, str, str], int] = {}
 
     for line_number, raw in enumerate(reader, start=2):
         if len(raw) != len(layout.header):
@@ -254,10 +255,23 @@ def parse_csv(data: bytes, filename: str) -> ParseResult:
             )
 
         if _is_summary_row(raw):
+            if summary is not None:
+                raise IntegrityError(
+                    f"row {line_number}: more than one REPORT SUMMARY row"
+                )
             summary = _parse_summary_row(raw, layout, line_number)
             continue
 
-        rows.append(_parse_sales_row(raw, layout, line_number))
+        row = _parse_sales_row(raw, layout, line_number)
+        natural_key = (row.item_name, row.sales_category, row.menu_group)
+        first_line = seen_keys.get(natural_key)
+        if first_line is not None:
+            raise IntegrityError(
+                f"row {line_number}: duplicate natural key {natural_key!r} "
+                f"(first seen on row {first_line})"
+            )
+        seen_keys[natural_key] = line_number
+        rows.append(row)
 
     if summary is not None:
         total_units = sum((row.units for row in rows), Decimal("0"))
