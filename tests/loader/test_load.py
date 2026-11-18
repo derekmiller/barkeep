@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from decimal import Decimal
 from pathlib import Path
@@ -17,6 +18,7 @@ from barkeep.loader import (
     load_directory,
     load_file,
 )
+from barkeep.loader.errors import ReportRejected
 
 pytestmark = pytest.mark.db
 
@@ -115,6 +117,78 @@ def test_non_weekly_report_is_rejected(conn: psycopg.Connection) -> None:
 
     with pytest.raises(LoaderError, match="full Sunday-Saturday week"):
         load_file(conn, data, DAILY_FILENAME)
+
+
+def test_non_weekly_rejection_carries_the_report_identity(
+    conn: psycopg.Connection,
+) -> None:
+    data = (FIXTURES / DAILY_FILENAME).read_bytes()
+
+    with pytest.raises(ReportRejected) as excinfo:
+        load_file(conn, data, DAILY_FILENAME)
+
+    rejected = excinfo.value
+    assert rejected.venue == "Example_Venue"
+    assert str(rejected.period_start) == "2026-11-15"
+    assert str(rejected.period_end) == "2026-11-15"
+    assert rejected.content_sha256 == hashlib.sha256(data).hexdigest()
+
+
+def test_failed_load_logs_hash_and_identity(
+    conn: psycopg.Connection, tmp_path: Path
+) -> None:
+    daily = (FIXTURES / DAILY_FILENAME).read_bytes()
+    (tmp_path / DAILY_FILENAME).write_bytes(daily)
+
+    load_directory(conn, tmp_path)
+
+    venue, period_start, period_end, digest, version = conn.execute(
+        """
+        SELECT venue, period_start, period_end, content_sha256, parser_version
+        FROM core.ingest_log WHERE status = 'failed'
+        """
+    ).fetchone()
+
+    assert venue == "Example_Venue"
+    assert str(period_start) == "2026-11-15"
+    assert str(period_end) == "2026-11-15"
+    assert digest == hashlib.sha256(daily).hexdigest()
+    assert version
+
+
+def test_unparseable_load_still_logs_its_hash(
+    conn: psycopg.Connection, tmp_path: Path
+) -> None:
+    (tmp_path / WEEKLY_FILENAME).write_bytes(b"not,a,report\n")
+
+    load_directory(conn, tmp_path)
+
+    digest, venue = conn.execute(
+        "SELECT content_sha256, venue FROM core.ingest_log WHERE status = 'failed'"
+    ).fetchone()
+
+    # The bytes are always hashed; the identity falls back to the filename.
+    assert digest == hashlib.sha256(b"not,a,report\n").hexdigest()
+    assert venue == "Example_Venue"
+
+
+def test_failure_with_unparseable_filename_logs_hash_but_no_identity(
+    conn: psycopg.Connection, tmp_path: Path
+) -> None:
+    (tmp_path / "garbage.csv").write_bytes(b"not,a,report\n")
+
+    load_directory(conn, tmp_path)
+
+    digest, venue, period_start = conn.execute(
+        """
+        SELECT content_sha256, venue, period_start
+        FROM core.ingest_log WHERE status = 'failed'
+        """
+    ).fetchone()
+
+    assert digest == hashlib.sha256(b"not,a,report\n").hexdigest()
+    assert venue is None
+    assert period_start is None
 
 
 def test_load_directory_continues_after_failure(

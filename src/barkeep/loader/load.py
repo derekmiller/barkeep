@@ -6,13 +6,14 @@ import hashlib
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import psycopg
 
 from barkeep import __version__ as PARSER_VERSION
-from barkeep.parser import ParseResult, parse_csv
+from barkeep.parser import ParseError, ParseResult, parse_csv, parse_filename
 
-from .errors import LoaderError
+from .errors import ReportRejected
 
 Status = str
 
@@ -61,12 +62,16 @@ def _log(
     )
 
 
-def _require_week(result: ParseResult, filename: str) -> None:
+def _require_week(result: ParseResult, filename: str, digest: str) -> None:
     if result.days_covered != 7 or result.period_start.weekday() != 6:
-        raise LoaderError(
+        raise ReportRejected(
             f"{filename}: expected a full Sunday-Saturday week, got "
             f"{result.period_start} -> {result.period_end} "
-            f"({result.days_covered} days)"
+            f"({result.days_covered} days)",
+            venue=result.venue,
+            period_start=result.period_start,
+            period_end=result.period_end,
+            content_sha256=digest,
         )
 
 
@@ -84,10 +89,9 @@ def load_file(
     period replaces that period's facts atomically.
     """
     parsed = parse_csv(data, filename)
-    if require_week:
-        _require_week(parsed, filename)
-
     digest = hashlib.sha256(data).hexdigest()
+    if require_week:
+        _require_week(parsed, filename, digest)
 
     with conn.transaction():
         existing = conn.execute(
@@ -241,6 +245,33 @@ def load_file(
     )
 
 
+def _failure_details(
+    data: bytes, filename: str, exc: Exception
+) -> dict[str, Any]:
+    """Return log columns for a failed attempt, derived from bytes and filename.
+
+    The hash is always available; the report identity is only filled in when a
+    :class:`ReportRejected` supplies it (the file parsed but was refused) or when
+    the filename itself matches the report contract.
+    """
+    details: dict[str, Any] = {"content_sha256": hashlib.sha256(data).hexdigest()}
+
+    venue = getattr(exc, "venue", None)
+    period_start = getattr(exc, "period_start", None)
+    period_end = getattr(exc, "period_end", None)
+
+    if venue is None:
+        try:
+            venue, period_start, period_end = parse_filename(filename)
+        except ParseError:
+            return details
+
+    details["venue"] = venue
+    details["period_start"] = period_start
+    details["period_end"] = period_end
+    return details
+
+
 def record_failure(
     conn: psycopg.Connection,
     filename: str,
@@ -249,6 +280,7 @@ def record_failure(
     venue: str | None = None,
     period_start: date | None = None,
     period_end: date | None = None,
+    content_sha256: str | None = None,
 ) -> None:
     """Record a failed ingest without aborting the rest of a directory load."""
     with conn.transaction():
@@ -259,8 +291,21 @@ def record_failure(
             venue=venue,
             period_start=period_start,
             period_end=period_end,
+            content_sha256=content_sha256,
             message=message,
         )
+
+
+def record_file_failure(
+    conn: psycopg.Connection, filename: str, data: bytes, exc: Exception
+) -> None:
+    """Record a failed attempt, deriving the hash and identity from ``data``."""
+    record_failure(
+        conn,
+        filename,
+        str(exc),
+        **_failure_details(data, filename, exc),
+    )
 
 
 def load_directory(
@@ -273,17 +318,18 @@ def load_directory(
     """Load every matching CSV in ``directory``, continuing after failures."""
     results: list[LoadResult] = []
     for path in sorted(Path(directory).glob(pattern)):
+        data = path.read_bytes()
         try:
             results.append(
                 load_file(
                     conn,
-                    path.read_bytes(),
+                    data,
                     path.name,
                     require_week=require_week,
                 )
             )
         except Exception as exc:  # noqa: BLE001 - report and continue
-            record_failure(conn, path.name, str(exc))
+            record_file_failure(conn, path.name, data, exc)
             results.append(
                 LoadResult(filename=path.name, status="failed", message=str(exc))
             )

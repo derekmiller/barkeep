@@ -8,7 +8,13 @@ import psycopg
 
 from .db import connect, resolve_database_url
 from .errors import LoaderError
-from .load import LoadResult, load_directory, load_file, record_failure
+from .load import (
+    LoadResult,
+    load_directory,
+    load_file,
+    record_failure,
+    record_file_failure,
+)
 from .secrets import read_secret_file
 
 
@@ -30,5 +36,6 @@ __all__ = [
     "load_file",
     "read_secret_file",
     "record_failure",
+    "record_file_failure",
     "resolve_database_url",
 ]

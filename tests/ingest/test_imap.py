@@ -28,6 +28,7 @@ def fake_imap(monkeypatch):
             self.selected: str | None = None
             self.search_args: tuple[str | None, tuple[str, ...]] | None = None
             self.store_calls: list[tuple[bytes, str, str]] = []
+            self.fetch_specs: list[str] = []
             FakeImap.instances.append(self)
 
         def login(self, user: str, password: str):
@@ -43,6 +44,7 @@ def fake_imap(monkeypatch):
             return "OK", [b" ".join(FakeImap.messages)]
 
         def fetch(self, uid, spec):
+            self.fetch_specs.append(spec)
             return "OK", [(b"header", FakeImap.messages[uid])]
 
         def store(self, uid, command, value):
@@ -227,7 +229,7 @@ def test_run_once_marks_report_seen_only_after_success(
 
 def test_run_once_leaves_failed_report_unread(fake_imap, monkeypatch) -> None:
     fake_imap.messages = {b"1": _raw_email_with_report()}
-    monkeypatch.setattr(imap, "record_failure", lambda *args, **kwargs: None)
+    monkeypatch.setattr(imap, "record_file_failure", lambda *args, **kwargs: None)
 
     def boom(*args, **kwargs):
         raise ValueError("bad report")
@@ -239,6 +241,84 @@ def test_run_once_leaves_failed_report_unread(fake_imap, monkeypatch) -> None:
     assert [result.status for result in results] == ["failed"]
     instance = fake_imap.instances[0]
     assert instance.store_calls == []
+
+
+def test_fetch_uses_peek_so_unrelated_mail_stays_unread(fake_imap) -> None:
+    # A plain BODY[]/RFC822 fetch sets \Seen server-side, which would mark mail
+    # read before the sender allowlist and attachment checks run.
+    fake_imap.messages = {b"1": _raw_email_without_report()}
+
+    run_once(object(), _config(), today=date(2026, 11, 15))  # type: ignore[arg-type]
+
+    instance = fake_imap.instances[0]
+    assert instance.fetch_specs == ["(BODY.PEEK[])"]
+    assert all("RFC822" not in spec for spec in instance.fetch_specs)
+
+
+def test_failed_attachment_is_logged_with_its_payload(fake_imap, monkeypatch) -> None:
+    fake_imap.messages = {b"1": _raw_email_with_report()}
+    captured: list[tuple[object, str, bytes, Exception]] = []
+    monkeypatch.setattr(
+        imap,
+        "record_file_failure",
+        lambda conn, filename, data, exc: captured.append(
+            (conn, filename, data, exc)
+        ),
+    )
+
+    def boom(*args, **kwargs):
+        raise ValueError("bad report")
+
+    monkeypatch.setattr(imap, "load_file", boom)
+
+    run_once(object(), _config(), today=date(2026, 11, 15))  # type: ignore[arg-type]
+
+    assert len(captured) == 1
+    _, filename, payload, exc = captured[0]
+    assert filename.endswith(".csv")
+    assert isinstance(payload, bytes) and payload.startswith(b"Menu Item")
+    assert isinstance(exc, ValueError)
+
+
+def _stub_connection():
+    class StubConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+    return StubConnection()
+
+
+def _stub_main(monkeypatch, results):
+    monkeypatch.setattr(
+        imap.ImapConfig, "from_env", classmethod(lambda cls: _config())
+    )
+    monkeypatch.setattr(imap, "connect", _stub_connection)
+    monkeypatch.setattr(imap, "run_once", lambda conn, config: results)
+
+
+def test_main_exits_nonzero_when_a_report_fails(monkeypatch, capsys) -> None:
+    _stub_main(
+        monkeypatch,
+        [LoadResult(filename="bad.csv", status="failed", message="boom")],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        imap.main()
+
+    assert excinfo.value.code == 1
+    assert "failed: bad.csv (boom)" in capsys.readouterr().out
+
+
+def test_main_exits_zero_when_everything_loads(monkeypatch) -> None:
+    _stub_main(
+        monkeypatch,
+        [LoadResult(filename="ok.csv", status="loaded")],
+    )
+
+    assert imap.main() is None
 
 
 def test_select_failure_is_reported(fake_imap) -> None:

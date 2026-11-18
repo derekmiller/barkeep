@@ -13,12 +13,22 @@ def parse_decimal(value: str) -> Decimal:
     Thousands separators and dollar signs are stripped unconditionally (only
     some layouts use them, and the parser must not special-case one row). The
     value is never converted through ``float``.
+
+    Non-finite values (``NaN``, ``Infinity``, ``sNaN``) are rejected, and so are
+    digit separators such as ``1_000`` that :class:`Decimal` would otherwise
+    accept. A ``NaN`` slipping through would be stored by Postgres and silently
+    poison every ``SUM`` built on the column.
     """
     cleaned = value.strip().replace(",", "").replace("$", "")
+    if "_" in cleaned:
+        raise RowParseError(f"not a decimal value: {value!r}")
     try:
-        return Decimal(cleaned)
+        parsed = Decimal(cleaned)
     except InvalidOperation as exc:
         raise RowParseError(f"not a decimal value: {value!r}") from exc
+    if not parsed.is_finite():
+        raise RowParseError(f"not a finite decimal value: {value!r}")
+    return parsed
 
 
 def parse_percentage(value: str) -> Decimal:

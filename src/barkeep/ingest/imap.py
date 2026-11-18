@@ -10,7 +10,12 @@ from datetime import date, timedelta
 
 import psycopg
 
-from barkeep.loader import LoadResult, load_file, record_failure
+from barkeep.loader import (
+    LoadResult,
+    load_file,
+    record_failure,
+    record_file_failure,
+)
 from barkeep.loader.db import connect
 from barkeep.loader.errors import LoaderError
 from barkeep.loader.secrets import read_secret_file
@@ -191,7 +196,10 @@ def run_once(
             uids = uids[:limit]
 
         for uid in uids:
-            status, message_data = client.fetch(uid, "(RFC822)")
+            # BODY.PEEK[] rather than RFC822: a plain BODY[]/RFC822 fetch sets
+            # \Seen server-side, which would mark unrelated mail as read before
+            # the From allowlist and attachment checks ever run.
+            status, message_data = client.fetch(uid, "(BODY.PEEK[])")
             if status != "OK":
                 continue
 
@@ -229,7 +237,7 @@ def run_once(
                 try:
                     results.append(load_file(conn, payload, filename))
                 except Exception as exc:  # noqa: BLE001 - record and continue
-                    record_failure(conn, filename, str(exc))
+                    record_file_failure(conn, filename, payload, exc)
                     results.append(
                         LoadResult(
                             filename=filename,
@@ -258,6 +266,9 @@ def main() -> None:
     for result in results:
         detail = f" ({result.message})" if result.message else ""
         print(f"{result.status}: {result.filename}{detail}")
+    if any(result.status == "failed" for result in results):
+        # Surface failures to systemd/the calling shell instead of looking green.
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

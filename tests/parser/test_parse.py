@@ -22,6 +22,7 @@ from barkeep.parser import (
     RowParseError,
     SalesRow,
     parse_csv,
+    parse_decimal,
 )
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
@@ -367,6 +368,60 @@ def test_multiple_summary_rows_raise_integrity_error() -> None:
             _csv_bytes([HEADER, VALID_ROW, VALID_SUMMARY, VALID_SUMMARY]),
             WEEKLY_FILENAME,
         )
+
+
+# ---------------------------------------------------------------------------
+# 5.1 The double-counting alarm: summary units must equal the body-row total.
+# ---------------------------------------------------------------------------
+
+
+def test_summary_units_mismatch_raises_integrity_error() -> None:
+    # One body row of 1.00 units, but the summary claims 2.00: the signature of
+    # a summary row that was counted twice, or of a truncated body.
+    summary = VALID_SUMMARY.copy()
+    summary[5] = "2.00"
+
+    with pytest.raises(IntegrityError, match="summary units do not equal"):
+        parse_csv(_csv_bytes([HEADER, VALID_ROW, summary]), WEEKLY_FILENAME)
+
+
+# ---------------------------------------------------------------------------
+# Non-finite quantities: Decimal accepts NaN/Infinity, Postgres stores NaN, and
+# NaN poisons every SUM built on the column.
+# ---------------------------------------------------------------------------
+
+
+def test_non_finite_quantity_raises_row_parse_error() -> None:
+    row = VALID_ROW.copy()
+    row[5] = "NaN"
+
+    with pytest.raises(RowParseError, match="finite"):
+        parse_csv(_csv_bytes([HEADER, row, VALID_SUMMARY]), WEEKLY_FILENAME)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["NaN", "sNaN", "-NaN", "Infinity", "-Infinity", "1_000", "abc", "--5"],
+)
+def test_parse_decimal_rejects_non_finite_and_separators(value: str) -> None:
+    with pytest.raises(RowParseError):
+        parse_decimal(value)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("-2.00", Decimal("-2.00")),
+        ("-$214.25", Decimal("-214.25")),
+        ("1,234.56", Decimal("1234.56")),
+        (" 12.50 ", Decimal("12.50")),
+        ("0.00", Decimal("0.00")),
+    ],
+)
+def test_parse_decimal_still_accepts_export_values(
+    value: str, expected: Decimal
+) -> None:
+    assert parse_decimal(value) == expected
 
 
 # ---------------------------------------------------------------------------
