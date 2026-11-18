@@ -248,6 +248,10 @@ def parse_csv(data: bytes, filename: str) -> ParseResult:
     seen_keys: dict[tuple[str, str, str], int] = {}
 
     for line_number, raw in enumerate(reader, start=2):
+        if not any(cell.strip() for cell in raw):
+            # Blank padding lines (e.g. a trailing "\n\n") carry no data.
+            continue
+
         if len(raw) != len(layout.header):
             raise RowParseError(
                 f"row {line_number}: expected {len(layout.header)} columns, "

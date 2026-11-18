@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import io
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -450,12 +451,38 @@ def test_empty_csv_raises_format_error() -> None:
         parse_csv(b"", WEEKLY_FILENAME)
 
 
+def test_trailing_blank_lines_are_ignored() -> None:
+    data = _csv_bytes([HEADER, VALID_ROW, VALID_SUMMARY]) + b"\n\n"
+
+    result = parse_csv(data, WEEKLY_FILENAME)
+
+    assert len(result.rows) == 1
+    assert result.summary is not None
+
+
+def test_whitespace_only_padding_line_is_ignored() -> None:
+    data = _csv_bytes([HEADER, VALID_ROW]) + b"   ,  ,   \n"
+
+    result = parse_csv(data, WEEKLY_FILENAME)
+
+    assert len(result.rows) == 1
+
+
 def test_wrong_row_width_raises_row_parse_error() -> None:
     with pytest.raises(RowParseError):
         parse_csv(
             _csv_bytes([HEADER, VALID_ROW[:-1], VALID_SUMMARY]),
             WEEKLY_FILENAME,
         )
+
+
+def test_filename_suffix_is_case_insensitive() -> None:
+    data = _csv_bytes([HEADER, VALID_ROW, VALID_SUMMARY])
+
+    upper = parse_csv(data, WEEKLY_FILENAME[:-4] + ".CSV")
+    mixed = parse_csv(data, WEEKLY_FILENAME[:-4] + ".Csv")
+
+    assert upper.period_start == mixed.period_start == date(2026, 11, 8)
 
 
 def test_invalid_filename_date_raises() -> None:

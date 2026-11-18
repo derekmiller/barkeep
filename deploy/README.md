@@ -38,9 +38,16 @@ be ingested. Use TouchBistro's sending address, or a bare domain.
 Run a poll or a backfill on demand:
 
 ```bash
-docker compose --profile ingest run --rm ingest
-docker compose --profile ingest run --rm backfill
+docker compose -f compose.yaml -f compose.dev.yaml --profile ingest run --rm ingest
+docker compose -f compose.yaml -f compose.dev.yaml --profile ingest run --rm backfill
 ```
+
+Pass **both** files for every `--profile ingest` command on a workstation.
+Compose compares the resolved config on each invocation, so omitting
+`compose.dev.yaml` recreates `db` from the production-shaped config and silently
+drops the published `127.0.0.1:5432` port. Host-run tests and tools then fail
+with `connection refused` until you bring the dev stack back up. The data itself
+lives in the `pgdata` volume and is not lost.
 
 Images build for the workstation architecture, which is fine for local work.
 

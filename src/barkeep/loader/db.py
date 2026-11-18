@@ -39,4 +39,7 @@ def connect(dsn: str | None = None) -> psycopg.Connection:
         raise LoaderError(
             "no database DSN: set DATABASE_URL or DATABASE_URL_FILE"
         )
-    return psycopg.connect(resolved)
+    try:
+        return psycopg.connect(resolved)
+    except psycopg.Error as exc:
+        raise LoaderError(f"cannot connect to Postgres: {exc}") from exc

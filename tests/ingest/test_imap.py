@@ -39,17 +39,19 @@ def fake_imap(monkeypatch):
             self.selected = mailbox
             return FakeImap.select_status, [b"1"]
 
-        def search(self, charset, *criteria):
-            self.search_args = (charset, criteria)
-            return "OK", [b" ".join(FakeImap.messages)]
-
-        def fetch(self, uid, spec):
-            self.fetch_specs.append(spec)
-            return "OK", [(b"header", FakeImap.messages[uid])]
-
-        def store(self, uid, command, value):
-            self.store_calls.append((uid, command, value))
-            return "OK", []
+        def uid(self, command, *args):
+            if command == "SEARCH":
+                self.search_args = (None, args)
+                return "OK", [b" ".join(FakeImap.messages)]
+            if command == "FETCH":
+                uid, spec = args
+                self.fetch_specs.append(spec)
+                return "OK", [(b"header", FakeImap.messages[uid])]
+            if command == "STORE":
+                uid, flag_command, value = args
+                self.store_calls.append((uid, flag_command, value))
+                return "OK", []
+            raise AssertionError(f"unexpected UID command: {command}")
 
         def logout(self):
             self.logged_out = True
@@ -241,6 +243,32 @@ def test_run_once_leaves_failed_report_unread(fake_imap, monkeypatch) -> None:
     assert [result.status for result in results] == ["failed"]
     instance = fake_imap.instances[0]
     assert instance.store_calls == []
+
+
+def test_mailbox_names_with_spaces_are_quoted(fake_imap) -> None:
+    fake_imap.messages = {b"1": _raw_email_without_report()}
+
+    run_once(
+        object(),  # type: ignore[arg-type]
+        _config(mailbox="Sales Reports"),
+        today=date(2026, 11, 15),
+    )
+
+    assert fake_imap.instances[0].selected == '"Sales Reports"'
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("SalesReports", "SalesReports"),
+        ("INBOX", "INBOX"),
+        ("Sales Reports", '"Sales Reports"'),
+        ('Odd"Name', '"Odd\\"Name"'),
+        ("Back\\slash", '"Back\\\\slash"'),
+    ],
+)
+def test_imap_mailbox_quoting(name: str, expected: str) -> None:
+    assert imap._imap_mailbox(name) == expected
 
 
 def test_fetch_uses_peek_so_unrelated_mail_stays_unread(fake_imap) -> None:

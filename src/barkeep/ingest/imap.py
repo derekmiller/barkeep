@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import imaplib
 import os
+import re
 import ssl
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -24,6 +25,9 @@ from .attachments import extract_csv_attachments, sender_matches
 
 # Fail fast instead of hanging the scheduled run on a dead server.
 _IMAP_TIMEOUT_SECONDS = 60
+
+#: Mailbox names made only of these characters need no quoting.
+_MAILBOX_ATOM_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 
 _MONTHS = (
     "Jan",
@@ -50,6 +54,18 @@ def _imap_quote(value: str) -> str:
     """Quote an IMAP search value, escaping backslashes and double quotes."""
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _imap_mailbox(value: str) -> str:
+    """Return a mailbox name as an IMAP astring.
+
+    Bare atom names pass through unchanged; anything containing a space or a
+    special character is quoted, otherwise ``SELECT Sales Reports`` would be
+    sent as two arguments and rejected.
+    """
+    if _MAILBOX_ATOM_RE.match(value):
+        return value
+    return _imap_quote(value)
 
 
 def build_search_criteria(
@@ -181,13 +197,16 @@ def run_once(
 
     try:
         client.login(config.user, config.password)
-        status, _ = client.select(config.mailbox)
+        status, _ = client.select(_imap_mailbox(config.mailbox))
         if status != "OK":
             raise LoaderError(
                 f"IMAP SELECT {config.mailbox!r} failed: {status}"
             )
 
-        status, data = client.search(None, *criteria)
+        # UID commands, not sequence numbers: sequence numbers shift when the
+        # mailbox changes between SEARCH and STORE, which could mark an
+        # unrelated message \Seen.
+        status, data = client.uid("SEARCH", *criteria)
         if status != "OK":
             raise LoaderError(f"IMAP search failed: {status}")
 
@@ -199,7 +218,7 @@ def run_once(
             # BODY.PEEK[] rather than RFC822: a plain BODY[]/RFC822 fetch sets
             # \Seen server-side, which would mark unrelated mail as read before
             # the From allowlist and attachment checks ever run.
-            status, message_data = client.fetch(uid, "(BODY.PEEK[])")
+            status, message_data = client.uid("FETCH", uid, "(BODY.PEEK[])")
             if status != "OK":
                 continue
 
@@ -248,7 +267,7 @@ def run_once(
                     failed = True
 
             if not failed:
-                client.store(uid, "+FLAGS", "\\Seen")
+                client.uid("STORE", uid, "+FLAGS", "\\Seen")
     finally:
         try:
             client.logout()

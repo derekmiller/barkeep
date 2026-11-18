@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 from dataclasses import dataclass
 from datetime import date
@@ -13,7 +14,7 @@ import psycopg
 from barkeep import __version__ as PARSER_VERSION
 from barkeep.parser import ParseError, ParseResult, parse_csv, parse_filename
 
-from .errors import ReportRejected
+from .errors import LoaderError, ReportRejected
 
 Status = str
 
@@ -93,7 +94,37 @@ def load_file(
     if require_week:
         _require_week(parsed, filename, digest)
 
+    try:
+        status, message = _apply_report(conn, parsed, digest, filename)
+    except psycopg.Error as exc:
+        raise LoaderError(f"{filename}: database error: {exc}") from exc
+
+    return LoadResult(
+        filename=filename,
+        status=status,
+        venue=parsed.venue,
+        period_start=parsed.period_start,
+        period_end=parsed.period_end,
+        message=message,
+    )
+
+
+def _apply_report(
+    conn: psycopg.Connection,
+    parsed: ParseResult,
+    digest: str,
+    filename: str,
+) -> tuple[str, str | None]:
+    """Insert, replace, or skip one report; return ``(status, message)``."""
     with conn.transaction():
+        # Serialise concurrent loads of the same period. SELECT ... FOR UPDATE
+        # cannot lock a row that does not exist yet, so two concurrent
+        # first-loads would otherwise race into report_period_unique.
+        conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+            (f"{parsed.venue}|{parsed.period_start}|{parsed.period_end}",),
+        )
+
         existing = conn.execute(
             """
             SELECT id, content_sha256
@@ -115,14 +146,7 @@ def load_file(
                 content_sha256=digest,
                 message="identical report already loaded",
             )
-            return LoadResult(
-                filename=filename,
-                status="skipped",
-                venue=parsed.venue,
-                period_start=parsed.period_start,
-                period_end=parsed.period_end,
-                message="identical report already loaded",
-            )
+            return "skipped", "identical report already loaded"
 
         if existing is not None:
             report_id = existing[0]
@@ -236,13 +260,7 @@ def load_file(
             content_sha256=digest,
         )
 
-    return LoadResult(
-        filename=filename,
-        status=status,
-        venue=parsed.venue,
-        period_start=parsed.period_start,
-        period_end=parsed.period_end,
-    )
+    return status, None
 
 
 def _failure_details(
@@ -308,6 +326,20 @@ def record_file_failure(
     )
 
 
+def _matching_files(directory: Path, pattern: str) -> list[Path]:
+    """Return files matching ``pattern``, ignoring case on the suffix.
+
+    Email ingestion accepts ``*.CSV`` (``attachments.is_sales_report`` lowercases
+    the name), so a directory scan that only matched ``*.csv`` would silently
+    skip the same file dropped in ``data/raw/``.
+    """
+    return sorted(
+        path
+        for path in directory.iterdir()
+        if path.is_file() and fnmatch.fnmatch(path.name.lower(), pattern.lower())
+    )
+
+
 def load_directory(
     conn: psycopg.Connection,
     directory: str | Path,
@@ -317,7 +349,7 @@ def load_directory(
 ) -> list[LoadResult]:
     """Load every matching CSV in ``directory``, continuing after failures."""
     results: list[LoadResult] = []
-    for path in sorted(Path(directory).glob(pattern)):
+    for path in _matching_files(Path(directory), pattern):
         data = path.read_bytes()
         try:
             results.append(

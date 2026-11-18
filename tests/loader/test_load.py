@@ -15,6 +15,7 @@ import pytest
 from barkeep.loader import (
     LoaderError,
     apply_migrations,
+    connect,
     load_directory,
     load_file,
 )
@@ -132,6 +133,49 @@ def test_non_weekly_rejection_carries_the_report_identity(
     assert str(rejected.period_start) == "2026-11-15"
     assert str(rejected.period_end) == "2026-11-15"
     assert rejected.content_sha256 == hashlib.sha256(data).hexdigest()
+
+
+def test_directory_scan_accepts_uppercase_suffix(
+    conn: psycopg.Connection, tmp_path: Path
+) -> None:
+    # Email ingestion accepts *.CSV; a directory scan must not silently skip it.
+    (tmp_path / f"{WEEKLY_FILENAME[:-4]}.CSV").write_bytes(_weekly_bytes())
+
+    results = load_directory(conn, tmp_path)
+
+    assert [result.status for result in results] == ["loaded"]
+    assert results[0].filename.endswith(".CSV")
+
+
+OVERFLOW_REPORT = (
+    "Menu Item,Sales Category,Menu Group,Menu Item Void Quantity,Voids,"
+    "Menu Item Quantity,Gross Sales,Item Discounts,Bill Discounts,Net Sales,"
+    "Menu Item Quantity (Refunds),Refund Amount (Net Sales),Sales Percentage,"
+    "Total Tax\n"
+    "Overflow Item,Alcohol,Wells,0.00,0.00,100000000000000.00,10.00,0.00,0.00,"
+    "10.00,0.00,0.00,100.00%,0.00\n"
+)
+
+
+def test_database_errors_surface_as_loader_error(conn: psycopg.Connection) -> None:
+    # Units exceed numeric(14,2); the driver error must not escape raw.
+    with pytest.raises(LoaderError, match="database error"):
+        load_file(conn, OVERFLOW_REPORT.encode("utf-8"), WEEKLY_FILENAME)
+
+
+def test_connect_failure_surfaces_as_loader_error() -> None:
+    with pytest.raises(LoaderError, match="cannot connect"):
+        connect("postgresql://nobody@127.0.0.1:1/none")
+
+
+def test_connect_without_a_dsn_explains_the_configuration(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("DATABASE_URL_FILE", raising=False)
+
+    with pytest.raises(LoaderError, match="no database DSN"):
+        connect()
 
 
 def test_failed_load_logs_hash_and_identity(
