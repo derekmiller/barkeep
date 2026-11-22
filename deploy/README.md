@@ -81,15 +81,68 @@ docker compose --profile ingest run --rm backfill
 
 ### Scheduling
 
+The poller is a single pass. `barkeep-ingest.timer` runs it daily at 06:15 host
+time with a randomised delay, and `Persistent=true` catches up after the host
+was off; a late run only produces skips, because the loader is idempotent.
+
 ```bash
 sudo cp deploy/barkeep-ingest.service deploy/barkeep-ingest.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now barkeep-ingest.timer
 ```
 
-The service runs as `barkeep`; that user must be in the `docker` group (or run
-the unit as root) and must own `secrets/imap_password`. Edit `WorkingDirectory`
-if the repo is not at `/opt/barkeep`.
+The unit encodes several assumptions. Check them before enabling:
+
+```bash
+systemd-analyze verify /etc/systemd/system/barkeep-ingest.service \
+                          /etc/systemd/system/barkeep-ingest.timer
+command -v docker                 # must be found on the unit's PATH
+id barkeep                        # must list the docker group
+sudo -u barkeep docker compose version
+```
+
+- `WorkingDirectory` and `Documentation` assume the checkout is `/opt/barkeep`;
+  edit both if it is elsewhere.
+- `Requires=docker.service` matches the Docker CE and RHEL packages. A
+  socket-activated install needs `Requires=docker.socket` instead; snap packs
+  its own unit name.
+- The Compose project name is pinned to `barkeep` so that renaming the checkout
+  cannot start a second project with its own empty data volume.
+- The service user must own `secrets/imap_password`, be able to read `.env`, and
+  be able to talk to the Docker socket.
+
+A dry run before trusting the timer:
+
+```bash
+sudo systemctl start barkeep-ingest
+journalctl -u barkeep-ingest -n 50 --no-pager
+```
+
+A healthy first run is a wall of `skipped: … (identical report already loaded)`,
+because the backfill already holds those weeks. `loaded:` is a week the backfill
+missed, `failed:` names the file that broke, and `error:` is a single line for a
+configuration or connection problem.
+
+Confirm the schedule itself:
+
+```bash
+systemctl list-timers barkeep-ingest.timer
+systemctl status barkeep-ingest.timer
+```
+
+`list-timers` shows the next firing; a blank `NEXT` with `LEFT n/a` means the
+timer is not enabled.
+
+On failure the service retries twice at five-minute intervals and then waits for
+the next daily firing, so a revoked app password does not hammer the IMAP server
+all day:
+
+```bash
+journalctl -u barkeep-ingest --since '2 days ago'
+```
+
+`OnCalendar` means the host's local time. Add `TimeZone=` to the timer if the
+server runs UTC and you schedule in local time.
 
 ## Metabase
 

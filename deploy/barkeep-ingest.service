@@ -1,12 +1,39 @@
 [Unit]
 Description=Ingest TouchBistro weekly report from IMAP
+Documentation=file:/opt/barkeep/deploy/README.md
 After=network-online.target docker.service
+Wants=network-online.target
 Requires=docker.service
+# A permanently broken configuration (revoked password, wrong label) must not
+# retry all day. Three attempts, then wait for the next timer firing.
+StartLimitIntervalSec=2h
+StartLimitBurst=3
 
 [Service]
 Type=oneshot
-# The service user must be in the docker group (or run this as root).
+SyslogIdentifier=barkeep-ingest
+# The service user must be in the docker group (or run this as root) and must
+# own secrets/imap_password.
 User=barkeep
 WorkingDirectory=/opt/barkeep
-ExecStart=/usr/bin/docker compose --profile ingest run --rm ingest
+
+# Pin the Compose project name. Renaming the checkout directory would otherwise
+# silently create a second project with its own empty database volume.
+Environment=COMPOSE_PROJECT_NAME=barkeep
+# ExecStart needs an absolute path and systemd gives no PATH, so resolve docker
+# through env with an explicit search path (distros and snap disagree on where
+# it lives).
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/snap/bin
+ExecStart=/usr/bin/env docker compose --profile ingest run --rm ingest
+
+# Transient network or registry failures are worth retrying; the poller exits 1
+# for both a failed attachment and an unreachable host, and is idempotent via
+# the content hash, so a retry can only ever produce skips.
+Restart=on-failure
+RestartSec=5min
+
+# First run may start db and wait for its healthcheck before polling.
 TimeoutStartSec=15min
+TimeoutStopSec=60s
+NoNewPrivileges=true
+PrivateTmp=true

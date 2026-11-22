@@ -353,6 +353,25 @@ def test_main_exits_zero_when_everything_loads(monkeypatch) -> None:
     assert imap.main() is None
 
 
+def test_main_reports_a_loader_failure_as_one_line(monkeypatch, capsys) -> None:
+    def unreachable():
+        raise LoaderError("cannot connect to IMAP host 'imap.gmail.com': timed out")
+
+    monkeypatch.setattr(
+        imap.ImapConfig, "from_env", classmethod(lambda cls: _config())
+    )
+    monkeypatch.setattr(imap, "connect", unreachable)
+
+    with pytest.raises(SystemExit) as excinfo:
+        imap.main()
+
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.err == (
+        "error: cannot connect to IMAP host 'imap.gmail.com': timed out\n"
+    )
+
+
 def test_connection_failure_is_reported_as_a_loader_error(monkeypatch) -> None:
     class Unreachable:
         def __init__(self, *args, **kwargs):

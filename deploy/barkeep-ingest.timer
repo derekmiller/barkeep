@@ -1,10 +1,16 @@
 [Unit]
 Description=Daily TouchBistro report ingest
+Documentation=file:/opt/barkeep/deploy/README.md
 
 [Timer]
+# Local time of the host (systemd reads the system timezone). TouchBistro mails
+# the closed week on Sunday or Monday, so a daily run picks it up either way.
 OnCalendar=*-*-* 06:15:00
 RandomizedDelaySec=15min
+# Catch up after the host was off at the scheduled time. The poller is
+# idempotent, so a late run is a no-op rather than a duplicate load.
 Persistent=true
+Unit=barkeep-ingest.service
 
 [Install]
 WantedBy=timers.target

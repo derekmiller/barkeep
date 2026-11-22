@@ -6,6 +6,7 @@ import imaplib
 import os
 import re
 import ssl
+import sys
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -289,9 +290,15 @@ def run_once(
 
 def main() -> None:
     """CLI entry point: ``python -m barkeep.ingest``."""
-    config = ImapConfig.from_env()
-    with connect() as conn:
-        results = run_once(conn, config)
+    try:
+        config = ImapConfig.from_env()
+        with connect() as conn:
+            results = run_once(conn, config)
+    except LoaderError as exc:
+        # A scheduled run wants one line in the journal, not a traceback. The
+        # exit status still tells systemd to retry.
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
     for result in results:
         detail = f" ({result.message})" if result.message else ""
         print(f"{result.status}: {result.filename}{detail}")
