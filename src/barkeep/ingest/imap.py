@@ -189,14 +189,24 @@ def run_once(
     )
 
     results: list[LoadResult] = []
-    client = imaplib.IMAP4_SSL(
-        config.host,
-        ssl_context=ssl.create_default_context(),
-        timeout=_IMAP_TIMEOUT_SECONDS,
-    )
+    try:
+        client = imaplib.IMAP4_SSL(
+            config.host,
+            ssl_context=ssl.create_default_context(),
+            timeout=_IMAP_TIMEOUT_SECONDS,
+        )
+    except (OSError, imaplib.IMAP4.error) as exc:
+        raise LoaderError(
+            f"cannot connect to IMAP host {config.host!r}: {exc}"
+        ) from exc
 
     try:
-        client.login(config.user, config.password)
+        try:
+            client.login(config.user, config.password)
+        except imaplib.IMAP4.error as exc:
+            raise LoaderError(
+                f"IMAP login failed for {config.user!r} on {config.host!r}: {exc}"
+            ) from exc
         status, _ = client.select(_imap_mailbox(config.mailbox))
         if status != "OK":
             raise LoaderError(
@@ -278,7 +288,7 @@ def run_once(
 
 
 def main() -> None:
-    """CLI entry point: ``python -m barkeep.ingest.imap``."""
+    """CLI entry point: ``python -m barkeep.ingest``."""
     config = ImapConfig.from_env()
     with connect() as conn:
         results = run_once(conn, config)
@@ -288,7 +298,3 @@ def main() -> None:
     if any(result.status == "failed" for result in results):
         # Surface failures to systemd/the calling shell instead of looking green.
         raise SystemExit(1)
-
-
-if __name__ == "__main__":
-    main()

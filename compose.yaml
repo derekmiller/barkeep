@@ -47,7 +47,7 @@ services:
     command:
       - sh
       - -c
-      - python -m barkeep.loader.migrate && python -m barkeep.ingest.imap
+      - python -m barkeep.loader.migrate && python -m barkeep.ingest
     environment:
       <<: *db_env
       IMAP_HOST: ${IMAP_HOST:-}

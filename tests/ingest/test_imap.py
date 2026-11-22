@@ -20,6 +20,7 @@ def fake_imap(monkeypatch):
         instances: list["FakeImap"] = []
         messages: dict[bytes, bytes] = {}
         select_status = "OK"
+        login_error: Exception | None = None
 
         def __init__(self, host: str, *, ssl_context=None, timeout=None) -> None:
             self.host = host
@@ -32,6 +33,8 @@ def fake_imap(monkeypatch):
             FakeImap.instances.append(self)
 
         def login(self, user: str, password: str):
+            if FakeImap.login_error is not None:
+                raise FakeImap.login_error
             self.login_args = (user, password)
             return "OK", []
 
@@ -57,6 +60,7 @@ def fake_imap(monkeypatch):
             self.logged_out = True
 
     monkeypatch.setattr(imap.imaplib, "IMAP4_SSL", FakeImap)
+    FakeImap.login_error = None
     return FakeImap
 
 
@@ -347,6 +351,26 @@ def test_main_exits_zero_when_everything_loads(monkeypatch) -> None:
     )
 
     assert imap.main() is None
+
+
+def test_connection_failure_is_reported_as_a_loader_error(monkeypatch) -> None:
+    class Unreachable:
+        def __init__(self, *args, **kwargs):
+            raise OSError("Name or service not known")
+
+    monkeypatch.setattr(imap.imaplib, "IMAP4_SSL", Unreachable)
+
+    with pytest.raises(LoaderError, match="cannot connect to IMAP host"):
+        run_once(object(), _config(), today=date(2026, 11, 15))  # type: ignore[arg-type]
+
+
+def test_login_failure_is_reported_as_a_loader_error(fake_imap) -> None:
+    fake_imap.login_error = imap.imaplib.IMAP4.error(
+        "[AUTHENTICATIONFAILED] Invalid credentials"
+    )
+
+    with pytest.raises(LoaderError, match="login failed"):
+        run_once(object(), _config(), today=date(2026, 11, 15))  # type: ignore[arg-type]
 
 
 def test_select_failure_is_reported(fake_imap) -> None:

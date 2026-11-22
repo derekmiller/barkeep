@@ -16,4 +16,4 @@ RUN pip install --no-cache-dir '.[loader]'
 RUN useradd --system --uid 10001 --create-home barkeep
 USER barkeep
 
-CMD ["python", "-m", "barkeep.ingest.imap"]
+CMD ["python", "-m", "barkeep.ingest"]
