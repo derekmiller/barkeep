@@ -45,9 +45,12 @@ barkeep/
 │   │   ├── db.py            # Postgres connection
 │   │   ├── errors.py        # LoaderError
 │   │   ├── load.py          # transactional replace + ingest log
-│   │   └── migrate.py       # numbered SQL migrations
+│   │   ├── migrate.py       # numbered SQL migrations
+│   │   ├── secrets.py       # read a secret from a file
+│   │   └── venues.py        # venue alias resolution
 │   └── ingest/
 │       ├── __init__.py
+│       ├── __main__.py      # python -m barkeep.ingest
 │       ├── attachments.py   # email -> CSV attachments
 │       └── imap.py          # IMAP poller
 └── tests/
@@ -568,6 +571,15 @@ The loader lives in `src/barkeep/loader/` and is invoked after parsing.
 - The whole load runs inside `with conn.transaction():`; a failure rolls back and
   never leaves a partial period.
 - Re-loading the same period must never duplicate facts.
+- The venue in a filename is unreliable in one specific way: a manual export
+  from the web UI writes the venue name (`Bay_Horse_Tavern-SalesByMenuItem-…`),
+  while the scheduled email attachment writes the TouchBistro location id
+  (`54011-SalesByMenuItem-…`). Both describe one bar. `BARKEEP_VENUE_ALIASES`
+  (`"54011=Bay_Horse_Tavern[,from=to]"`) is applied by the loader after parsing
+  and before identity is computed, so both formats resolve to one report. This
+  is explicit configuration, never inference: the parser still reports the
+  filename's venue verbatim, and nothing fuzzy-matches venue names. A malformed
+  alias entry, a self-mapping, or a cycle raises `LoaderError`.
 
 ### 13.3 Row identity
 

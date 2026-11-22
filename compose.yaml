@@ -57,6 +57,9 @@ services:
       IMAP_SUBJECT: ${IMAP_SUBJECT:-}
       IMAP_SINCE_DAYS: ${IMAP_SINCE_DAYS:-21}
       IMAP_PASSWORD_FILE: /run/secrets/imap_password
+      # Maps the venue id in scheduled filenames onto the venue name a manual
+      # export uses, e.g. "54011=Bay_Horse_Tavern".
+      BARKEEP_VENUE_ALIASES: ${BARKEEP_VENUE_ALIASES:-}
     secrets:
       - imap_password
     depends_on:
@@ -72,6 +75,7 @@ services:
       - python -m barkeep.loader.migrate && python scripts/backfill.py /data/raw
     environment:
       <<: *db_env
+      BARKEEP_VENUE_ALIASES: ${BARKEEP_VENUE_ALIASES:-}
     volumes:
       - ./data/raw:/data/raw:ro
     depends_on:

@@ -147,6 +147,68 @@ def test_directory_scan_accepts_uppercase_suffix(
     assert results[0].filename.endswith(".CSV")
 
 
+def test_location_id_and_venue_name_share_one_identity(
+    conn: psycopg.Connection,
+) -> None:
+    # The scheduled email names the TouchBistro location id; a manual web export
+    # names the venue. Both describe one bar and must not become two reports.
+    data = _weekly_bytes()
+    aliases = {"54011": "Example_Venue"}
+    aliased_filename = WEEKLY_FILENAME.replace("Example_Venue", "54011")
+
+    first = load_file(conn, data, aliased_filename, venue_aliases=aliases)
+    assert first.status == "loaded"
+    assert first.venue == "Example_Venue"
+
+    second = load_file(conn, data, WEEKLY_FILENAME, venue_aliases=aliases)
+    assert second.status == "skipped"
+
+    venues = [
+        row[0] for row in conn.execute("SELECT DISTINCT venue FROM core.report")
+    ]
+    assert venues == ["Example_Venue"]
+    assert conn.execute("SELECT count(*) FROM core.report").fetchone()[0] == 1
+    assert conn.execute("SELECT count(*) FROM core.sales_row").fetchone()[0] == 10
+
+
+def test_venue_aliases_are_read_from_the_environment(
+    conn: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BARKEEP_VENUE_ALIASES", "54011=Example_Venue")
+    aliased_filename = WEEKLY_FILENAME.replace("Example_Venue", "54011")
+
+    result = load_file(conn, _weekly_bytes(), aliased_filename)
+
+    assert result.venue == "Example_Venue"
+    assert conn.execute("SELECT venue FROM core.report").fetchone()[0] == (
+        "Example_Venue"
+    )
+
+
+def test_directory_load_canonicalises_and_logs_failures_by_canonical_venue(
+    conn: psycopg.Connection, tmp_path: Path
+) -> None:
+    aliases = {"54011": "Example_Venue"}
+    weekly = WEEKLY_FILENAME.replace("Example_Venue", "54011")
+    daily = DAILY_FILENAME.replace("Example_Venue", "54011")
+    (tmp_path / weekly).write_bytes(_weekly_bytes())
+    (tmp_path / daily).write_bytes((FIXTURES / DAILY_FILENAME).read_bytes())
+
+    results = load_directory(conn, tmp_path, venue_aliases=aliases)
+
+    assert {result.filename: result.status for result in results} == {
+        weekly: "loaded",
+        daily: "failed",
+    }
+    venues, statuses = zip(
+        *conn.execute(
+            "SELECT venue, status FROM core.ingest_log ORDER BY filename"
+        ).fetchall()
+    )
+    assert set(venues) == {"Example_Venue"}
+    assert set(statuses) == {"loaded", "failed"}
+
+
 OVERFLOW_REPORT = (
     "Menu Item,Sales Category,Menu Group,Menu Item Void Quantity,Voids,"
     "Menu Item Quantity,Gross Sales,Item Discounts,Bill Discounts,Net Sales,"

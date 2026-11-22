@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from barkeep import __version__ as PARSER_VERSION
 from barkeep.parser import ParseError, ParseResult, parse_csv, parse_filename
 
 from .errors import LoaderError, ReportRejected
+from .venues import canonical_venue, venue_aliases_from_env
 
 Status = str
 
@@ -82,14 +84,26 @@ def load_file(
     filename: str,
     *,
     require_week: bool = True,
+    venue_aliases: Mapping[str, str] | None = None,
 ) -> LoadResult:
     """Parse and load one report, replacing any existing report for its period.
 
     The file is keyed by ``(venue, period_start, period_end)``, not by filename.
     Re-loading identical bytes is a no-op; loading different bytes for the same
     period replaces that period's facts atomically.
+
+    ``venue_aliases`` maps the venue recorded in the filename onto its canonical
+    name (see :mod:`barkeep.loader.venues`). It defaults to
+    ``BARKEEP_VENUE_ALIASES``; pass an explicit mapping to bypass the environment.
     """
     parsed = parse_csv(data, filename)
+    aliases = (
+        venue_aliases_from_env() if venue_aliases is None else venue_aliases
+    )
+    canonical = canonical_venue(parsed.venue, aliases)
+    if canonical != parsed.venue:
+        parsed = replace(parsed, venue=canonical)
+
     digest = hashlib.sha256(data).hexdigest()
     if require_week:
         _require_week(parsed, filename, digest)
@@ -264,13 +278,17 @@ def _apply_report(
 
 
 def _failure_details(
-    data: bytes, filename: str, exc: Exception
+    data: bytes,
+    filename: str,
+    exc: Exception,
+    aliases: Mapping[str, str],
 ) -> dict[str, Any]:
     """Return log columns for a failed attempt, derived from bytes and filename.
 
     The hash is always available; the report identity is only filled in when a
     :class:`ReportRejected` supplies it (the file parsed but was refused) or when
-    the filename itself matches the report contract.
+    the filename itself matches the report contract. The venue is canonicalised
+    so the log agrees with what a successful load would have written.
     """
     details: dict[str, Any] = {"content_sha256": hashlib.sha256(data).hexdigest()}
 
@@ -284,7 +302,7 @@ def _failure_details(
         except ParseError:
             return details
 
-    details["venue"] = venue
+    details["venue"] = canonical_venue(venue, aliases)
     details["period_start"] = period_start
     details["period_end"] = period_end
     return details
@@ -315,14 +333,22 @@ def record_failure(
 
 
 def record_file_failure(
-    conn: psycopg.Connection, filename: str, data: bytes, exc: Exception
+    conn: psycopg.Connection,
+    filename: str,
+    data: bytes,
+    exc: Exception,
+    *,
+    venue_aliases: Mapping[str, str] | None = None,
 ) -> None:
     """Record a failed attempt, deriving the hash and identity from ``data``."""
+    aliases = (
+        venue_aliases_from_env() if venue_aliases is None else venue_aliases
+    )
     record_failure(
         conn,
         filename,
         str(exc),
-        **_failure_details(data, filename, exc),
+        **_failure_details(data, filename, exc, aliases),
     )
 
 
@@ -346,8 +372,12 @@ def load_directory(
     *,
     pattern: str = "*.csv",
     require_week: bool = True,
+    venue_aliases: Mapping[str, str] | None = None,
 ) -> list[LoadResult]:
     """Load every matching CSV in ``directory``, continuing after failures."""
+    aliases = (
+        venue_aliases_from_env() if venue_aliases is None else venue_aliases
+    )
     results: list[LoadResult] = []
     for path in _matching_files(Path(directory), pattern):
         data = path.read_bytes()
@@ -358,10 +388,13 @@ def load_directory(
                     data,
                     path.name,
                     require_week=require_week,
+                    venue_aliases=aliases,
                 )
             )
         except Exception as exc:  # noqa: BLE001 - report and continue
-            record_file_failure(conn, path.name, data, exc)
+            record_file_failure(
+                conn, path.name, data, exc, venue_aliases=aliases
+            )
             results.append(
                 LoadResult(filename=path.name, status="failed", message=str(exc))
             )
