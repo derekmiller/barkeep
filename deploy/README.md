@@ -211,7 +211,14 @@ Expect `200`. Metabase's first start runs its own migrations and takes a minute;
 workstation that has the corpus:
 
 ```bash
-rsync -av --chmod=600 data/raw/ roadkill:/opt/barkeep/data/raw/
+rsync -av data/raw/ roadkill:/opt/barkeep/data/raw/
+```
+
+No `--chmod`: macOS ships openrsync, which rejects it. Tighten permissions on
+the host afterwards if you care:
+
+```bash
+chmod 600 /opt/barkeep/data/raw/*.csv
 ```
 
 Then, on the host:
