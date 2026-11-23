@@ -669,9 +669,22 @@ Deployment target is an always-on Linux host running Docker Compose.
   `docker compose up -d` starts only the database and Metabase.
 - `compose.dev.yaml` is a workstation override that publishes Postgres for
   host-run tools and tests. Production uses `compose.yaml` alone.
+- `deploy/compose.lan.yaml` is the production override for a host with a reverse
+  proxy: it attaches `metabase` to the external `edge` Docker network so a proxy
+  in another Compose project can reach `metabase:3000`. It publishes nothing new;
+  the loopback port stays for SSH tunnels. The proxy itself is host
+  infrastructure, not part of this package — `deploy/edge/` is a worked example.
 - `ingest` runs migrations then one poll pass and exits. Trigger it daily from a
   host timer; `deploy/barkeep-ingest.service` and `.timer` are samples. Do not
   add an in-container sleep loop.
+- `deploy/barkeep-backup.service` and `.timer` run `scripts/backup.sh`:
+  `docker compose exec` `pg_dump`, gzip, then verify (non-empty, valid gzip, ends
+  with pg_dump's completion marker) before rotating. A failed backup must never
+  delete the last good copy. Off-box copying is optional rsync via
+  `/etc/barkeep/backup.env`; a dump on the same disk is not a backup.
+- `scripts/preflight.sh` is the read-only host check (distro, systemd, Docker,
+  Compose v2, docker group, ports 80/443, memory, disk, NTP). It exits nonzero
+  only for conditions that make the deployment impossible.
 - `backfill` mounts `data/raw` read-only and runs `scripts/backfill.py` for the
   initial load. It applies migrations first.
 - Secrets: the IMAP app password is a Compose secret mounted at

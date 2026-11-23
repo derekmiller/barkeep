@@ -1,0 +1,22 @@
+# LAN deployment override: puts Metabase behind a reverse proxy that runs as a
+# separate Compose project.
+#
+#   docker network create edge                       # once, on the host
+#   docker compose -f compose.yaml -f deploy/compose.lan.yaml up -d
+#
+# The `edge` network is external so it survives `docker compose down`, and so
+# other services on the same host can join it without knowing about this repo.
+#
+# Metabase keeps its loopback publish on purpose: the proxy reaches it over
+# `edge`, while 127.0.0.1:3000 remains available for an SSH tunnel when the
+# proxy is being changed. Loopback publishing exposes nothing off-host.
+services:
+  metabase:
+    networks:
+      - default
+      - edge
+
+networks:
+  edge:
+    external: true
+    name: edge

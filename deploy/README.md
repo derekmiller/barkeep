@@ -1,168 +1,373 @@
 # Deployment
 
-Two environments share the same image and services:
+Two environments share one image:
 
-- **development** — macOS workstation; run things on demand.
-- **production** — always-on Linux host; `ingest` runs from a systemd timer.
+| | Workstation (macOS) | Production (Linux host `roadkill`) |
+|---|---|---|
+| Compose files | `compose.yaml` + `compose.dev.yaml` | `compose.yaml` + `deploy/compose.lan.yaml` |
+| Postgres port | published on `127.0.0.1:5432` | not published |
+| Metabase | `127.0.0.1:3000`, reached directly | `127.0.0.1:3000`, reached through Caddy |
+| Ingest | `run --rm ingest` by hand | `barkeep-ingest.timer` |
+| Backups | the laptop's own backups | `barkeep-backup.timer` |
 
-`compose.yaml` is production-shaped: it does not publish Postgres, and Metabase
-is bound to loopback. `compose.dev.yaml` adds the Postgres port for a workstation.
+Production topology on `roadkill`:
 
-## Secrets
+```
+        Pi-hole DNS                    Caddy (project: edge)
+   barkeep.roadkill.lan  ──┐        ┌────────────────────────┐
+   roadkill.lan          ──┴───────▶│ :80 :443, tls internal │
+                                     └───────────┬────────────┘
+                                                 │ edge network
+   ┌─────────────────────────────────────────────▼──────────────┐
+   │ project: barkeep                                           │
+   │   metabase  ──▶ :3000 (loopback published, for tunnels)    │
+   │   db        ──▶ Postgres, unpublished                      │
+   │   ingest    ──▶ one IMAP pass, run by a systemd timer      │
+   └────────────────────────────────────────────────────────────┘
+```
 
-Both environments read the Gmail app password as a Compose secret:
+Run the steps in order; each ends with a check that must pass before the next
+one means anything.
+
+## 0. Preflight
+
+```bash
+./scripts/preflight.sh
+```
+
+Read-only. `FAIL` means the deployment cannot work as written (no systemd, no
+Compose v2, user not in the `docker` group); `WARN` means decide, don't ignore.
+
+## 1. Provision the host
+
+Ubuntu/Debian, systemd, Docker CE from Docker's apt repository.
+
+```bash
+sudo apt update && sudo apt -y upgrade
+sudo apt -y install ca-certificates curl gnupg ufw rsync
+
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+ARCH=$(dpkg --print-architecture)
+CODENAME=$(. /etc/os-release && echo "$VERSION_CODENAME")
+printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu %s stable\n' "$ARCH" "$CODENAME" | sudo tee /etc/apt/sources.list.d/docker.list
+
+sudo apt update
+sudo apt -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+
+Bounded container logs, because the default `json-file` driver grows forever:
+
+```bash
+sudo tee /etc/docker/daemon.json >/dev/null <<'EOF'
+{
+  "log-driver": "local",
+  "log-opts": { "max-size": "10m", "max-file": "3" },
+  "live-restore": true
+}
+EOF
+sudo systemctl restart docker
+```
+
+Users and firewall. `docker` group membership is root-equivalent, so keep it to
+the admin and the service account:
+
+```bash
+sudo usermod -aG docker "$USER"          # re-login for this to take effect
+sudo useradd --system --create-home --home-dir /var/lib/barkeep --shell /usr/sbin/nologin barkeep
+sudo usermod -aG docker barkeep
+
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow from 192.168.0.0/24 to any port 22 proto tcp
+sudo ufw allow from 192.168.0.0/24 to any port 80 proto tcp
+sudo ufw allow from 192.168.0.0/24 to any port 443 proto tcp
+sudo ufw --force enable
+
+sudo timedatectl set-ntp true
+```
+
+Adjust the subnet. **`ufw` does not filter ports published by containers** —
+Docker inserts its own iptables rules ahead of it. That is fine here: Postgres is
+never published, and Caddy's 80/443 are the only published ports. When you add
+another service, do not assume `ufw` is protecting its published port.
+
+## 2. DNS
+
+In Pi-hole (Local DNS → DNS Records), one A record per name, all pointing at the
+host:
+
+```
+roadkill.lan          -> 192.168.0.231
+barkeep.roadkill.lan  -> 192.168.0.231
+```
+
+Also set a DHCP reservation for that address. A DNS record is only as stable as
+the lease: if the address moves, the name resolves to whatever took it, which is
+worse than a name that fails.
+
+## 3. Deploy barkeep
+
+```bash
+sudo mkdir -p /opt && sudo chown "$USER": /opt
+git clone https://github.com/derekmiller/barkeep.git /opt/barkeep
+cd /opt/barkeep
+cp .env.example .env
+```
+
+Fill in `.env`. The values that matter in production:
+
+| Variable | Why |
+|---|---|
+| `IMAP_SENDER` | required; the From allowlist. Unsolicited mail to the alias cannot inject reports |
+| `IMAP_USER`, `IMAP_MAILBOX` | the real account and the dedicated label, never `INBOX` |
+| `BARKEEP_VENUE_ALIASES` | `54011=Bay_Horse_Tavern`. **Commented out in `.env.example`.** Without it the scheduled report's location id creates a second venue that double-counts every week |
+| `POSTGRES_PASSWORD` | container credential; a distinct value here is cheap |
+| `DATABASE_URL` | only used by host-run tools; containers use the `db` service name |
+
+Create the app password (a separate one from any workstation instance, so either
+can be revoked alone):
 
 ```bash
 mkdir -p secrets
 read -rsp 'App password: ' P
 printf '%s' "$P" > secrets/imap_password
-unset P
-echo
-chmod 700 secrets
-chmod 600 secrets/imap_password
+unset P; echo
+chmod 700 secrets && chmod 600 secrets/imap_password
 ```
 
-The file is gitignored. Use a separate Google app password per environment
-(e.g. `barkeep-dev`, `barkeep-prod`) so either can be revoked independently.
-
-## Development (macOS)
+Give the service user read access to exactly the configuration it needs — the
+timer runs as `barkeep`, which is not you:
 
 ```bash
-cp .env.example .env          # set IMAP_SENDER plus the other IMAP_* values
-docker compose -f compose.yaml -f compose.dev.yaml up -d db metabase
+sudo chgrp barkeep .env secrets secrets/imap_password
+sudo chmod 640 .env secrets/imap_password
+sudo chmod 750 secrets
 ```
 
-`IMAP_SENDER` is required: it is the From allowlist that decides which mail may
-be ingested. Use TouchBistro's sending address, or a bare domain.
-
-Run a poll or a backfill on demand:
+Build and start. The `edge` network is created once and survives `down`:
 
 ```bash
-docker compose -f compose.yaml -f compose.dev.yaml --profile ingest run --rm ingest
-docker compose -f compose.yaml -f compose.dev.yaml --profile ingest run --rm backfill
+sudo -u barkeep docker network create edge 2>/dev/null || true
+docker compose -f compose.yaml -f deploy/compose.lan.yaml build
+docker compose -f compose.yaml -f deploy/compose.lan.yaml up -d
 ```
 
-Pass **both** files for every `--profile ingest` command on a workstation.
-Compose compares the resolved config on each invocation, so omitting
-`compose.dev.yaml` recreates `db` from the production-shaped config and silently
-drops the published `127.0.0.1:5432` port. Host-run tests and tools then fail
-with `connection refused` until you bring the dev stack back up. The data itself
-lives in the `pgdata` volume and is not lost.
-
-Images build for the workstation architecture, which is fine for local work.
-
-## Production (Linux)
+Check:
 
 ```bash
-git clone <repo> /opt/barkeep
-cd /opt/barkeep
-cp .env.example .env          # set POSTGRES_*, IMAP_*, and a distinct password if desired
-# create secrets/imap_password as above
-docker compose build          # build natively on the server (amd64)
-docker compose up -d          # db + metabase only
+docker compose ps                                  # db healthy, metabase up
+curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3000/api/health
 ```
 
-The server's `.env` `DATABASE_URL` is only used by host-run tools and tests;
-containers always use the `db` service name.
+Expect `200`. Metabase's first start runs its own migrations and takes a minute;
+`docker compose logs -f metabase` shows `Metabase Initialization COMPLETE`.
 
-### Initial backfill
+## 4. Load the history
 
-`data/raw/` is gitignored and intentionally not in the repo. Copy it once:
+`data/raw/` is gitignored, so the clone has nothing to load. Copy it from the
+workstation that has the corpus:
 
 ```bash
-rsync -av --chmod=600 data/raw/ user@prod:/opt/barkeep/data/raw/
+rsync -av --chmod=600 data/raw/ roadkill:/opt/barkeep/data/raw/
 ```
 
-Then, on the server:
+Then, on the host:
 
 ```bash
-docker compose --profile ingest run --rm backfill
+docker compose -f compose.yaml -f deploy/compose.lan.yaml --profile ingest run --rm backfill
 ```
 
-### Scheduling
+The compose service applies migrations, then loads every CSV. Expect a run of
+`loaded:` lines and a final `114 files: loaded=114`.
 
-The poller is a single pass. `barkeep-ingest.timer` runs it daily at 06:15 host
-time with a randomised delay, and `Persistent=true` catches up after the host
-was off; a late run only produces skips, because the loader is idempotent.
+Verify against the known history:
 
 ```bash
-sudo cp deploy/barkeep-ingest.service deploy/barkeep-ingest.timer /etc/systemd/system/
+docker compose exec -T db psql -U barkeep -d barkeep -c "
+  SELECT (SELECT count(*) FROM core.report)         AS reports,
+         (SELECT count(*) FROM core.sales_row)      AS rows,
+         (SELECT count(*) FROM core.report_summary) AS summaries,
+         (SELECT min(period_start) FROM core.report) AS first_week,
+         (SELECT max(period_end)   FROM core.report) AS last_week"
+```
+
+Expect `114 | 13331 | 114 | 2024-09-08 | 2026-11-14`. Then check that the weeks
+are contiguous and that no row breaks the arithmetic identity (both should
+return zero rows):
+
+```bash
+docker compose exec -T db psql -U barkeep -d barkeep -c "
+  SELECT count(*) AS gaps FROM (
+    SELECT period_start,
+           lag(period_end) OVER (ORDER BY period_start) AS prev_end
+    FROM core.report
+  ) t
+  WHERE prev_end IS NOT NULL AND period_start <> prev_end + 1"
+
+docker compose exec -T db psql -U barkeep -d barkeep -c "
+  SELECT count(*) FROM core.sales_row
+  WHERE gross_sales - item_discounts - bill_discounts <> net_sales"
+```
+
+If the backfill reports `0 files`, the directory is empty — the mount is
+read-only and silently accepts nothing.
+
+## 5. Edge proxy
+
+Caddy lives outside this repo because it will serve every service on the host.
+
+```bash
+sudo mkdir -p /opt/edge && sudo chown "$USER": /opt/edge
+cp deploy/edge/compose.yaml deploy/edge/Caddyfile /opt/edge/
+cd /opt/edge && docker compose up -d
+```
+
+Then trust Caddy's local CA on the devices you browse from, or every page warns:
+
+```bash
+cd /opt/edge
+docker compose exec caddy cat /data/caddy/pki/authorities/local/root.crt > caddy-root.crt
+```
+
+- macOS: double-click it, add to the **System** keychain, then set it to *Always
+  Trust*.
+- iOS: AirDrop it, install the profile, then Settings → General → About →
+  Certificate Trust Settings → enable full trust.
+
+Verify from a laptop, not the host:
+
+```bash
+curl -fsS -o /dev/null -w '%{http_code}\n' https://barkeep.roadkill.lan/api/health
+```
+
+`200` means DNS, TLS, the `edge` network, and Metabase all agree. A `502` means
+Caddy cannot reach `metabase:3000` — usually Metabase is not on the `edge`
+network, i.e. started without `deploy/compose.lan.yaml`.
+
+## 6. Timers
+
+Four units: the ingest and backup services, each with a daily timer.
+
+```bash
+sudo cp deploy/barkeep-ingest.service deploy/barkeep-ingest.timer \
+        deploy/barkeep-backup.service deploy/barkeep-backup.timer \
+        /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now barkeep-ingest.timer
 ```
 
-The unit encodes several assumptions. Check them before enabling:
-
-```bash
-systemd-analyze verify /etc/systemd/system/barkeep-ingest.service \
-                          /etc/systemd/system/barkeep-ingest.timer
-command -v docker                 # must be found on the unit's PATH
-id barkeep                        # must list the docker group
-sudo -u barkeep docker compose version
-```
-
-- `WorkingDirectory` and `Documentation` assume the checkout is `/opt/barkeep`;
-  edit both if it is elsewhere.
-- `Requires=docker.service` matches the Docker CE and RHEL packages. A
-  socket-activated install needs `Requires=docker.socket` instead; snap packs
-  its own unit name.
-- The Compose project name is pinned to `barkeep` so that renaming the checkout
-  cannot start a second project with its own empty data volume.
-- The service user must own `secrets/imap_password`, be able to read `.env`, and
-  be able to talk to the Docker socket.
-
-A dry run before trusting the timer:
+Dry-run both before trusting the schedule:
 
 ```bash
 sudo systemctl start barkeep-ingest
 journalctl -u barkeep-ingest -n 50 --no-pager
+
+sudo systemctl start barkeep-backup
+journalctl -u barkeep-backup -n 20 --no-pager
 ```
 
-A healthy first run is a wall of `skipped: … (identical report already loaded)`,
-because the backfill already holds those weeks. `loaded:` is a week the backfill
-missed, `failed:` names the file that broke, and `error:` is a single line for a
-configuration or connection problem.
+The ingest dry run should print a wall of `skipped: … (identical report already
+loaded)` — the backfill already holds every week the mailbox offers. That is the
+proof that search, sender filter, attachment extraction, and hash matching work
+against the real server. `loaded:` is a week the backfill missed; `failed:` names
+a file; `error:` is a single line for a configuration or connection problem.
 
-Confirm the schedule itself:
+Then enable:
 
 ```bash
-systemctl list-timers barkeep-ingest.timer
-systemctl status barkeep-ingest.timer
+sudo systemctl enable --now barkeep-ingest.timer barkeep-backup.timer
+systemctl list-timers 'barkeep-*'
 ```
 
-`list-timers` shows the next firing; a blank `NEXT` with `LEFT n/a` means the
-timer is not enabled.
+Ingest fires daily at 06:15 host time (catch-up after downtime via `Persistent`),
+backup at 03:30 with a randomised delay. `OnCalendar` is local time; add
+`TimeZone=` to a timer if the host runs UTC and you schedule in local time.
 
-On failure the service retries twice at five-minute intervals and then waits for
-the next daily firing, so a revoked app password does not hammer the IMAP server
-all day:
+On failure a unit retries at five-minute intervals, three attempts within two
+hours, then waits for the next daily firing — a revoked app password does not
+hammer Gmail all day.
+
+`Requires=docker.service` matches the Docker CE and RHEL packages. A
+socket-activated install needs `docker.socket` instead. Both units hard-code
+`/opt/barkeep`; edit `WorkingDirectory`, `Documentation`, and `ExecStart` if the
+checkout lives elsewhere.
+
+## 7. Backups
+
+Dumps land in `/var/lib/barkeep-backup`, mode `0700`, owned by `barkeep`; 14 days
+are kept. Each dump is verified (non-empty, valid gzip, ends with pg_dump's
+completion marker) before rotation, so a failed backup never deletes the last
+good copy.
+
+Copy them off the host — a backup on the same disk is a backup of nothing. Create
+a key for the service user and allow it to rsync to another machine:
 
 ```bash
-journalctl -u barkeep-ingest --since '2 days ago'
+sudo -u barkeep ssh-keygen -t ed25519 -N '' -C barkeep-backup
+sudo -u barkeep ssh-copy-id you@workstation
+sudo tee /etc/barkeep/backup.env >/dev/null <<'EOF'
+BARKEEP_BACKUP_REMOTE=you@workstation:/Users/you/barkeep-backups
+BARKEEP_BACKUP_KEEP=30
+EOF
 ```
 
-`OnCalendar` means the host's local time. Add `TimeZone=` to the timer if the
-server runs UTC and you schedule in local time.
-
-## Metabase
-
-Metabase stores its application data in the `metabase` database, created by
-`docker/init/01-metabase-db.sql` on first Postgres initialisation. If the
-`pgdata` volume already exists without that database:
+Prove a restore works at least once. This is the step that turns a file into a
+backup:
 
 ```bash
-docker compose exec db psql -U barkeep -d postgres -c 'CREATE DATABASE metabase;'
+DUMP=$(sudo ls -1t /var/lib/barkeep-backup/*.sql.gz | head -1)
+docker compose exec -T db psql -U barkeep -d postgres \
+  -c 'DROP DATABASE IF EXISTS restore_test' -c 'CREATE DATABASE restore_test'
+sudo zcat "$DUMP" | docker compose exec -T db psql -q -U barkeep -d restore_test
+docker compose exec -T db psql -U barkeep -d restore_test -c \
+  'SELECT count(*) AS reports FROM core.report'
+docker compose exec -T db psql -U barkeep -d postgres -c 'DROP DATABASE restore_test'
 ```
 
-Metabase listens on `127.0.0.1:3000`; put a TLS reverse proxy in front of it.
-Use the `analytics.*` views in a read-only database role, not `core.*` tables.
+Expect `114`. The dump includes the `analytics` views, so a restored database is
+immediately usable by BI.
 
-## Backups
+## 8. Cut over from the workstation
 
-The `pgdata` volume is the only copy of the data. Schedule a dump:
+Two hosts polling the same mailbox into two different databases is not harmful
+but it is confusing: Metabase shows one of them while the other keeps moving.
 
 ```bash
-docker compose exec -T db pg_dump -U barkeep -d barkeep | gzip > barkeep-$(date +%F).sql.gz
+# on the workstation
+docker compose -f compose.yaml -f compose.dev.yaml down
 ```
 
-Keep dumps off the host (object storage or another machine) and rotate them.
+Delete the workstation's `secrets/imap_password` if the instance is retiring, and
+revoke that app password in the Google account. The workstation's volume can stay
+as an archive; do not point its Metabase at production.
+
+## 9. Routine operations
+
+| Task | Command |
+|---|---|
+| Poll now | `docker compose -f compose.yaml -f deploy/compose.lan.yaml --profile ingest run --rm ingest` |
+| Back up now | `sudo systemctl start barkeep-backup` |
+| Logs for the timer | `journalctl -u barkeep-ingest --since yesterday` |
+| Query the database | `docker compose exec db psql -U barkeep -d barkeep` |
+| Upgrade the code | `git pull && docker compose -f compose.yaml -f deploy/compose.lan.yaml up -d --build` |
+| Apply new migrations | `docker compose --profile ingest run --rm migrate` |
+| Edge proxy changes | `cd /opt/edge && docker compose up -d` |
+
+After `git pull`, schema changes apply on the next ingest or backfill run; run
+the `migrate` service explicitly if you want them applied immediately.
+
+## 10. Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| `error: cannot connect to IMAP host` | host DNS or egress: `getent hosts imap.gmail.com` on the host |
+| `error: missing IMAP configuration: SENDER` | `IMAP_SENDER` empty in `.env` |
+| `error: … secret …` on the timer only | `barkeep` cannot read `secrets/imap_password`; check group and mode |
+| Ingest runs, prints nothing, exits 0 | the label is empty or `IMAP_SENDER` does not match the sender; nothing was found, not an error |
+| `502` from Caddy | Metabase not on `edge`: start with `deploy/compose.lan.yaml` |
+| Certificate warning in the browser | Caddy's root CA not installed on that device (step 5) |
+| `no such host` for `barkeep.roadkill.lan` | Pi-hole record missing, or the client caches the old answer |
+| Timer never fires | `systemctl list-timers barkeep-ingest.timer`; blank `NEXT` means not enabled |
+| Backfill loads `0 files` | `data/raw` empty on the host |
+| Weeks doubled under two venues | `BARKEEP_VENUE_ALIASES` missing from the host `.env` |

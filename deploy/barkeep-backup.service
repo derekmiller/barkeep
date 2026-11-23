@@ -1,0 +1,23 @@
+[Unit]
+Description=Back up the barkeep Postgres database
+Documentation=file:/opt/barkeep/deploy/README.md
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+SyslogIdentifier=barkeep-backup
+User=barkeep
+WorkingDirectory=/opt/barkeep
+Environment=COMPOSE_PROJECT_NAME=barkeep
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/snap/bin
+# systemd creates /var/lib/barkeep-backup owned by the service user.
+StateDirectory=barkeep-backup
+StateDirectoryMode=0700
+# Optional overrides: BARKEEP_BACKUP_KEEP, BARKEEP_BACKUP_REMOTE.
+EnvironmentFile=-/etc/barkeep/backup.env
+ExecStart=/usr/bin/env bash /opt/barkeep/scripts/backup.sh
+TimeoutStartSec=15min
+NoNewPrivileges=true
+PrivateTmp=true
