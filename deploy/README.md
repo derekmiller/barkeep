@@ -214,12 +214,19 @@ workstation that has the corpus:
 rsync -av data/raw/ roadkill:/opt/barkeep/data/raw/
 ```
 
-No `--chmod`: macOS ships openrsync, which rejects it. Tighten permissions on
-the host afterwards if you care:
+No `--chmod`: macOS ships openrsync, which rejects it. The corpus is mounted
+read-only and the image runs as **UID 10001**, so the files must be readable by
+that user. Do not lock them to 600:
 
 ```bash
-chmod 600 /opt/barkeep/data/raw/*.csv
+sudo chmod -R a+rX /opt/barkeep/data/raw
 ```
+
+`a+rX` grants `r` to everyone and adds execute only to directories — enough to
+traverse and read, and the `:ro` mount makes the whole thing immutable anyway.
+Get this wrong and the loader fails with `PermissionError: [Errno 13] Permission
+denied: '/data/raw'` before it opens a single CSV, because `iterdir()` cannot
+traverse the directory.
 
 Then, on the host:
 
@@ -437,5 +444,6 @@ can recreate it without the network the proxy expects.
 | `no such host` for `barkeep.roadkill.lan` | Pi-hole record missing, or the client caches the old answer |
 | Timer never fires | `systemctl list-timers barkeep-ingest.timer`; blank `NEXT` means not enabled |
 | Backfill loads `0 files` | `data/raw` empty on the host |
+| `PermissionError: … '/data/raw'` | corpus not readable by the container's UID 10001; `sudo chmod -R a+rX data/raw` |
 | `No services to build` | `build` ran without `--profile ingest`; Compose skips profile-gated services |
 | Weeks doubled under two venues | `BARKEEP_VENUE_ALIASES` missing from the host `.env` |
