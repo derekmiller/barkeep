@@ -183,9 +183,17 @@ Build and start. The `edge` network is created once and survives `down`:
 
 ```bash
 sudo -u barkeep docker network create edge 2>/dev/null || true
-docker compose -f compose.yaml -f deploy/compose.lan.yaml build
+docker compose -f compose.yaml -f deploy/compose.lan.yaml --profile ingest build
 docker compose -f compose.yaml -f deploy/compose.lan.yaml up -d
 ```
+
+`--profile ingest` is required for `build`: `migrate`, `ingest`, and `backfill`
+sit behind that profile, and Compose only acts on active services, so without it
+the command reports `No services to build` and leaves you with no image.
+
+`up -d` deliberately omits the profile — it starts `db` and `metabase` only.
+Adding `--profile ingest` here would launch `ingest` and `backfill` as
+containers; they are one-shot jobs driven by `run --rm` or the timers.
 
 Check:
 
@@ -383,12 +391,31 @@ as an archive; do not point its Metabase at production.
 | Back up now | `sudo systemctl start barkeep-backup` |
 | Logs for the timer | `journalctl -u barkeep-ingest --since yesterday` |
 | Query the database | `docker compose exec db psql -U barkeep -d barkeep` |
-| Upgrade the code | `git pull && docker compose -f compose.yaml -f deploy/compose.lan.yaml up -d --build` |
-| Apply new migrations | `docker compose --profile ingest run --rm migrate` |
+| Upgrade the code | see [Upgrading](#upgrading) |
+| Apply new migrations | `docker compose -f compose.yaml -f deploy/compose.lan.yaml --profile ingest run --rm migrate` |
 | Edge proxy changes | `cd /opt/edge && docker compose up -d` |
 
-After `git pull`, schema changes apply on the next ingest or backfill run; run
-the `migrate` service explicitly if you want them applied immediately.
+### Upgrading
+
+```bash
+cd /opt/barkeep
+git pull
+docker compose -f compose.yaml -f deploy/compose.lan.yaml --profile ingest build
+docker compose -f compose.yaml -f deploy/compose.lan.yaml up -d
+```
+
+Not `up -d --build`: the profile-gated services would be skipped, and the timers
+would keep running the previous image while `git log` says otherwise.
+
+Schema changes apply on the next ingest or backfill run. To apply them now:
+
+```bash
+docker compose -f compose.yaml -f deploy/compose.lan.yaml --profile ingest run --rm migrate
+```
+
+Both `-f` files matter on every command, including `run`: omitting
+`deploy/compose.lan.yaml` makes Compose resolve a different config for `db` and
+can recreate it without the network the proxy expects.
 
 ## 10. Troubleshooting
 
@@ -403,4 +430,5 @@ the `migrate` service explicitly if you want them applied immediately.
 | `no such host` for `barkeep.roadkill.lan` | Pi-hole record missing, or the client caches the old answer |
 | Timer never fires | `systemctl list-timers barkeep-ingest.timer`; blank `NEXT` means not enabled |
 | Backfill loads `0 files` | `data/raw` empty on the host |
+| `No services to build` | `build` ran without `--profile ingest`; Compose skips profile-gated services |
 | Weeks doubled under two venues | `BARKEEP_VENUE_ALIASES` missing from the host `.env` |
