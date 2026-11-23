@@ -44,7 +44,7 @@ Ubuntu/Debian, systemd, Docker CE from Docker's apt repository.
 
 ```bash
 sudo apt update && sudo apt -y upgrade
-sudo apt -y install ca-certificates curl gnupg ufw rsync
+sudo apt -y install ca-certificates curl gnupg ufw rsync git
 
 sudo install -m 0755 -d /etc/apt/keyrings
 sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
@@ -109,10 +109,43 @@ worse than a name that fails.
 
 ## 3. Deploy barkeep
 
+Create the checkout owned by the admin user, so `git pull` and edits never need
+`sudo`; the service account reads it through ordinary file permissions.
+
 ```bash
-sudo mkdir -p /opt && sudo chown "$USER": /opt
-git clone https://github.com/derekmiller/barkeep.git /opt/barkeep
+sudo install -d -o "$USER" -g "$USER" /opt/barkeep
+```
+
+If the repository is private, the clone needs credentials. A read-only deploy key
+beats a personal token: it cannot push, and it is scoped to this one repo.
+
+```bash
+ssh-keygen -t ed25519 -N '' -C "$(hostname)-deploy" -f ~/.ssh/barkeep_deploy
+cat ~/.ssh/barkeep_deploy.pub
+```
+
+Add the public key under the repository's **Settings → Deploy keys**, read access
+only, and tell SSH to use it for this host:
+
+```bash
+cat >> ~/.ssh/config <<'EOF'
+Host github.com
+  IdentityFile ~/.ssh/barkeep_deploy
+  IdentitiesOnly yes
+EOF
+chmod 600 ~/.ssh/config
+ssh -T git@github.com      # "successfully authenticated" without a shell
+```
+
+Then clone, over SSH for a private repo or HTTPS if it is public:
+
+```bash
+git clone git@github.com:derekmiller/barkeep.git /opt/barkeep
+# public alternative:
+# git clone https://github.com/derekmiller/barkeep.git /opt/barkeep
+
 cd /opt/barkeep
+git log --oneline -1       # expect 30f6bf7 or later
 cp .env.example .env
 ```
 
