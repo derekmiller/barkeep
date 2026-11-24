@@ -234,8 +234,7 @@ def _check_summary_totals(rows: list[SalesRow], summary: SummaryRow) -> None:
         expected = getattr(summary, field)
         if total != expected:
             raise IntegrityError(
-                f"summary {field} do not equal the sum of body-row {field} "
-                f"({total} != {expected})"
+                f"summary {field} ({expected}) != sum of body rows ({total})"
             )
 
 

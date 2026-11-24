@@ -394,7 +394,12 @@ def load_directory(
     require_week: bool = True,
     venue_aliases: Mapping[str, str] | None = None,
 ) -> list[LoadResult]:
-    """Load every matching CSV in ``directory``, continuing after failures."""
+    """Load every matching CSV in ``directory``, continuing after failures.
+
+    ``require_week=False`` relaxes the weekly-only rule and nothing else: a file
+    with no ``REPORT SUMMARY`` row is still rejected, because a report truncated
+    between rows cannot be told from a complete one whatever its length.
+    """
     aliases = (
         venue_aliases_from_env() if venue_aliases is None else venue_aliases
     )

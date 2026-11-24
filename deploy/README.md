@@ -164,6 +164,9 @@ can be revoked alone):
 
 ```bash
 mkdir -p secrets
+# Rotating an existing password: the old file is owned by the container user at
+# mode 400, so it cannot be overwritten in place — remove it first.
+sudo rm -f secrets/imap_password
 read -rsp 'App password: ' P
 printf '%s' "$P" > secrets/imap_password
 unset P; echo
@@ -477,15 +480,19 @@ downgrade except restoring a backup. Never pin backwards, and back up first:
 
 ```bash
 cd /opt/barkeep
-docker inspect -f '{{.Config.Image}}' barkeep-metabase-1    # what is running
-curl -fsS http://127.0.0.1:3000/api/session/properties | grep -o '"tag":"[^"]*"'
+# The version that is actually running, asked of Metabase itself.
+curl -fsS http://127.0.0.1:3000/api/session/properties \
+  | grep -o '"tag":"v[^"]*"' || echo "could not read the running version"
 sudo systemctl start barkeep-backup
 ```
 
-The running version must be **older than or equal to** the new pin. A host
-that started from `latest` may already be ahead of an older pin; read both
-lines before editing anything. Then edit the
-`image:` tag, and:
+Do not read the version from `docker inspect … .Config.Image`: that prints the
+reference the container was *created* with — on a host installed from `latest`
+it prints `metabase/metabase:latest`, which is the question, not the answer.
+
+The version it prints must be **older than or equal to** the new pin. A host
+that started from `latest` may already be ahead of an older pin; check before
+editing anything. Then change the `image:` tag, and:
 
 ```bash
 docker compose -f compose.yaml -f deploy/compose.lan.yaml pull metabase
@@ -541,8 +548,7 @@ produces plausible wrong SQL that still has to be reviewed.
 |---|---|
 | `error: cannot connect to IMAP host` | host DNS or egress: `getent hosts imap.gmail.com` on the host |
 | `error: missing IMAP configuration: SENDER` | `IMAP_SENDER` empty in `.env` |
-| `error: … secret …` on the timer only | `barkeep` cannot read `secrets/imap_password`; check owner and mode |
-| `Permission denied` for `secrets/imap_password` | Compose secrets are bind mounts, so the container sees the host mode and owner: file `10001:10001` `400`, not `chgrp barkeep` `640` |
+| `error: cannot read secret file …` or `Permission denied` for `secrets/imap_password` | the container reads the bind-mounted file as UID **10001**, so the host owner and mode are what matter: file `10001:10001` `400`. `barkeep` does not read it and `chgrp barkeep` `640` cannot work |
 | IMAP `[AUTHENTICATIONFAILED]` | the app password is not exactly 16 bytes: `sudo stat -c '%s bytes' secrets/imap_password` catches a trailing newline (17) or Google's grouped display with spaces (19) |
 | Ingest prints `note: no report mail matched` | the label is empty or the Gmail filter is not applying it; check the filter, and check Spam — filters skip spam unless the filter says otherwise |
 | Ingest prints `warning: newest loaded report ended N days ago` | mail is arriving somewhere the poller does not look: wrong label, wrong mailbox, or `IMAP_SENDER` no longer matching |

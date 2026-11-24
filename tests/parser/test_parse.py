@@ -382,7 +382,9 @@ def test_summary_units_mismatch_raises_integrity_error() -> None:
     summary = VALID_SUMMARY.copy()
     summary[5] = "2.00"
 
-    with pytest.raises(IntegrityError, match="summary units do not equal"):
+    with pytest.raises(
+        IntegrityError, match=r"summary units \(2\.00\) != sum of body rows \(1\.00\)"
+    ):
         parse_csv(_csv_bytes([HEADER, VALID_ROW, summary]), WEEKLY_FILENAME)
 
 
@@ -401,7 +403,7 @@ def test_summary_money_mismatch_raises_integrity_error(index: int, field: str) -
     summary = VALID_SUMMARY.copy()
     summary[index] = str(Decimal(summary[index]) + Decimal("1.00"))
 
-    with pytest.raises(IntegrityError, match=f"summary {field} do not equal"):
+    with pytest.raises(IntegrityError, match=f"summary {field} \\("):
         parse_csv(_csv_bytes([HEADER, VALID_ROW, summary]), WEEKLY_FILENAME)
 
 
@@ -420,7 +422,7 @@ def test_summary_money_check_survives_a_dropped_zero_unit_row() -> None:
     )
     assert len(complete.rows) == 2
 
-    with pytest.raises(IntegrityError, match="summary gross_sales do not equal"):
+    with pytest.raises(IntegrityError, match=r"summary gross_sales \(15\.00\)"):
         parse_csv(_csv_bytes([HEADER, VALID_ROW, summary]), WEEKLY_FILENAME)
 
 
