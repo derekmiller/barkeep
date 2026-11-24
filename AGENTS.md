@@ -686,6 +686,10 @@ Deployment target is an always-on Linux host running Docker Compose.
   bound to loopback and stores its app data in the `metabase` database, and
   `migrate`, `ingest`, and `backfill` sit behind the `ingest` profile, so
   `docker compose up -d` starts only the database and Metabase.
+- Metabase is pinned to an exact version tag, never `latest`. A new version
+  migrates its application database in place and cannot be downgraded, so an
+  upgrade is a deliberate edit made after a backup, never a side effect of a
+  pull.
 - Metabase's AI features call an OpenAI-compatible endpoint, and refuse any
   private address unless `MB_LLM_ALLOWED_NETWORKS` says otherwise. The variable
   is passed through from `.env` and empty by default, so a LAN model is an

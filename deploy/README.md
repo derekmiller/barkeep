@@ -468,6 +468,35 @@ Both `-f` files matter on every command, including `run`: omitting
 `deploy/compose.lan.yaml` makes Compose resolve a different config for `db` and
 can recreate it without the network the proxy expects.
 
+### Upgrading Metabase
+
+`compose.yaml` pins an exact Metabase version. A new version migrates its
+application database (dashboards, questions, users) in place on first start, and
+an older version refuses to start against a newer schema — so there is no
+downgrade except restoring a backup. Never pin backwards, and back up first:
+
+```bash
+cd /opt/barkeep
+docker inspect -f '{{.Config.Image}}' barkeep-metabase-1    # what is running
+curl -fsS http://127.0.0.1:3000/api/session/properties | grep -o '"tag":"[^"]*"'
+sudo systemctl start barkeep-backup
+```
+
+The running version must be **older than or equal to** the new pin. A host
+that started from `latest` may already be ahead of an older pin; read both
+lines before editing anything. Then edit the
+`image:` tag, and:
+
+```bash
+docker compose -f compose.yaml -f deploy/compose.lan.yaml pull metabase
+docker compose -f compose.yaml -f deploy/compose.lan.yaml up -d metabase
+docker compose -f compose.yaml -f deploy/compose.lan.yaml logs -f metabase
+```
+
+Wait for `Metabase Initialization COMPLETE`. The first start after a version
+change runs migrations and can take a few minutes; interrupting it is how a
+half-migrated application database happens.
+
 ### Metabase AI against a LAN model
 
 Metabase's AI features take any OpenAI-compatible endpoint, which is how you
