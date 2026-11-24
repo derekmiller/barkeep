@@ -120,6 +120,44 @@ def test_non_weekly_report_is_rejected(conn: psycopg.Connection) -> None:
         load_file(conn, data, DAILY_FILENAME)
 
 
+def _without_summary(data: bytes) -> bytes:
+    lines = data.decode("utf-8").splitlines(keepends=True)
+    kept = [line for line in lines if not line.startswith('"REPORT SUMMARY')]
+    assert len(kept) == len(lines) - 1
+    return "".join(kept).encode("utf-8")
+
+
+def test_report_without_summary_is_rejected_and_not_loaded(
+    conn: psycopg.Connection,
+) -> None:
+    # A file cut off cleanly between rows parses; without the summary nothing
+    # can tell a short week from a complete one, so it must not be published.
+    data = _without_summary(_weekly_bytes())
+
+    with pytest.raises(ReportRejected, match="no REPORT SUMMARY") as excinfo:
+        load_file(conn, data, WEEKLY_FILENAME)
+
+    assert excinfo.value.content_sha256 == hashlib.sha256(data).hexdigest()
+    assert str(excinfo.value.period_start) == "2026-11-08"
+    assert conn.execute("SELECT count(*) FROM core.report").fetchone()[0] == 0
+
+
+def test_summaryless_file_in_a_directory_is_logged_as_failed(
+    conn: psycopg.Connection, tmp_path: Path
+) -> None:
+    (tmp_path / WEEKLY_FILENAME).write_bytes(_without_summary(_weekly_bytes()))
+
+    results = load_directory(conn, tmp_path)
+
+    assert [result.status for result in results] == ["failed"]
+    status, venue, message = conn.execute(
+        "SELECT status, venue, message FROM core.ingest_log"
+    ).fetchone()
+    assert status == "failed"
+    assert venue == "Example_Venue"
+    assert "no REPORT SUMMARY" in message
+
+
 def test_non_weekly_rejection_carries_the_report_identity(
     conn: psycopg.Connection,
 ) -> None:
@@ -215,6 +253,8 @@ OVERFLOW_REPORT = (
     "Menu Item Quantity (Refunds),Refund Amount (Net Sales),Sales Percentage,"
     "Total Tax\n"
     "Overflow Item,Alcohol,Wells,0.00,0.00,100000000000000.00,10.00,0.00,0.00,"
+    "10.00,0.00,0.00,100.00%,0.00\n"
+    "REPORT SUMMARY (1 entries),,,0.00,0.00,100000000000000.00,10.00,0.00,0.00,"
     "10.00,0.00,0.00,100.00%,0.00\n"
 )
 

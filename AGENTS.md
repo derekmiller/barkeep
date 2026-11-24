@@ -202,6 +202,16 @@ must never appear in `ParseResult.rows`.
 `result.summary.units`. If it does not, raise `IntegrityError`. This is your
 double-counting alarm — implement it, do not skip it.
 
+The same check applies to every totalled money column — `gross_sales`,
+`item_discounts`, `bill_discounts`, and `net_sales`. Units alone can agree while
+money does not: a dropped zero-unit comp row is invisible to a units-only check.
+All 114 corpus files satisfy every column exactly.
+
+The parser accepts a file with no summary row (`summary is None`), because
+parsing is not the place to decide policy. The loader rejects it (§13.1): a file
+truncated cleanly between rows still parses, and the summary is the only thing
+that could reveal the missing tail.
+
 ### 5.2 Thousands separators
 Summary-row values contain commas: `1,620.00`, `8,163.50`, `7,973.50`.
 `Decimal("1,620.00")` raises `InvalidOperation`. Strip commas before parsing.
@@ -558,6 +568,9 @@ The loader lives in `src/barkeep/loader/` and is invoked after parsing.
 - `load_file(..., require_week=True)` (the default) rejects any report where
   `days_covered != 7` or `period_start.weekday() != 6` (Sunday) with
   `LoaderError`. Do not weaken this in the default path.
+- `load_file` always rejects a report with no `REPORT SUMMARY` row with
+  `ReportRejected`, regardless of `require_week`. It is recorded as `failed` in
+  `core.ingest_log` with its identity and hash, and nothing is loaded.
 
 ### 13.2 Report identity and replacement
 

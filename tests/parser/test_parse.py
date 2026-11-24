@@ -386,6 +386,58 @@ def test_summary_units_mismatch_raises_integrity_error() -> None:
         parse_csv(_csv_bytes([HEADER, VALID_ROW, summary]), WEEKLY_FILENAME)
 
 
+@pytest.mark.parametrize(
+    ("index", "field"),
+    [
+        (6, "gross_sales"),
+        (7, "item_discounts"),
+        (8, "bill_discounts"),
+        (9, "net_sales"),
+    ],
+)
+def test_summary_money_mismatch_raises_integrity_error(index: int, field: str) -> None:
+    # Units agree, money does not: a dropped zero-unit comp row, or one row
+    # doubled while another is missing, passes a units-only check.
+    summary = VALID_SUMMARY.copy()
+    summary[index] = str(Decimal(summary[index]) + Decimal("1.00"))
+
+    with pytest.raises(IntegrityError, match=f"summary {field} do not equal"):
+        parse_csv(_csv_bytes([HEADER, VALID_ROW, summary]), WEEKLY_FILENAME)
+
+
+def test_summary_money_check_survives_a_dropped_zero_unit_row() -> None:
+    # A fully refunded row has zero units, so losing it leaves the units total
+    # intact; only the money totals can notice it is gone.
+    comp = VALID_ROW.copy()
+    comp[0] = "Comped Item"
+    comp[5] = "0.00"
+    comp[6], comp[7], comp[9] = "5.00", "0.00", "5.00"
+    summary = VALID_SUMMARY.copy()
+    summary[6], summary[9] = "15.00", "13.00"
+
+    complete = parse_csv(
+        _csv_bytes([HEADER, VALID_ROW, comp, summary]), WEEKLY_FILENAME
+    )
+    assert len(complete.rows) == 2
+
+    with pytest.raises(IntegrityError, match="summary gross_sales do not equal"):
+        parse_csv(_csv_bytes([HEADER, VALID_ROW, summary]), WEEKLY_FILENAME)
+
+
+def test_summary_check_holds_for_every_committed_fixture() -> None:
+    for filename in (
+        WEEKLY_FILENAME,
+        DAILY_FILENAME,
+        EDGE_FILENAME,
+        LEGACY_FILENAME,
+        TAX_SPLIT_FILENAME,
+    ):
+        result = _parse(filename)
+        assert result.summary is not None, filename
+        net = sum((row.net_sales for row in result.rows), Decimal("0"))
+        assert net == result.summary.net_sales, filename
+
+
 # ---------------------------------------------------------------------------
 # Non-finite quantities: Decimal accepts NaN/Infinity, Postgres stores NaN, and
 # NaN poisons every SUM built on the column.

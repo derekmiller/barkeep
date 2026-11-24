@@ -211,6 +211,34 @@ def _parse_summary_row(
     )
 
 
+#: Columns the REPORT SUMMARY row totals. Units come first so the double-count
+#: alarm (§5.1) is the message a reader sees when several columns disagree.
+_SUMMARY_TOTALS = (
+    "units",
+    "gross_sales",
+    "item_discounts",
+    "bill_discounts",
+    "net_sales",
+)
+
+
+def _check_summary_totals(rows: list[SalesRow], summary: SummaryRow) -> None:
+    """Raise :class:`IntegrityError` unless every body-row total equals the summary.
+
+    Units alone can agree while money does not — a dropped zero-unit comp row, or
+    a row counted twice alongside one missing — so every totalled column is
+    checked, not only the one that catches a doubled summary row.
+    """
+    for field in _SUMMARY_TOTALS:
+        total = sum((getattr(row, field) for row in rows), Decimal("0"))
+        expected = getattr(summary, field)
+        if total != expected:
+            raise IntegrityError(
+                f"summary {field} do not equal the sum of body-row {field} "
+                f"({total} != {expected})"
+            )
+
+
 def parse_csv(data: bytes, filename: str) -> ParseResult:
     """Parse a SalesByMenuItem CSV export into a :class:`ParseResult`.
 
@@ -278,12 +306,7 @@ def parse_csv(data: bytes, filename: str) -> ParseResult:
         rows.append(row)
 
     if summary is not None:
-        total_units = sum((row.units for row in rows), Decimal("0"))
-        if total_units != summary.units:
-            raise IntegrityError(
-                "summary units do not equal the sum of body-row units "
-                f"({total_units} != {summary.units})"
-            )
+        _check_summary_totals(rows, summary)
 
     days_covered = (period_end - period_start).days + 1
 

@@ -78,6 +78,21 @@ def _require_week(result: ParseResult, filename: str, digest: str) -> None:
         )
 
 
+def _require_summary(result: ParseResult, filename: str, digest: str) -> None:
+    # The parser accepts a file without its REPORT SUMMARY row, but every real
+    # export ends with one. A file cut off cleanly between rows still parses, and
+    # only the summary cross-check could notice the missing tail, so loading it
+    # would publish a short week as a complete one.
+    if result.summary is None:
+        raise ReportRejected(
+            f"{filename}: no REPORT SUMMARY row; the file may be truncated",
+            venue=result.venue,
+            period_start=result.period_start,
+            period_end=result.period_end,
+            content_sha256=digest,
+        )
+
+
 def load_file(
     conn: psycopg.Connection,
     data: bytes,
@@ -92,6 +107,10 @@ def load_file(
     Re-loading identical bytes is a no-op; loading different bytes for the same
     period replaces that period's facts atomically.
 
+    A report without its ``REPORT SUMMARY`` row is rejected with
+    :class:`ReportRejected`: the summary is the only cross-check that can detect
+    a file truncated between rows.
+
     ``venue_aliases`` maps the venue recorded in the filename onto its canonical
     name (see :mod:`barkeep.loader.venues`). It defaults to
     ``BARKEEP_VENUE_ALIASES``; pass an explicit mapping to bypass the environment.
@@ -105,6 +124,7 @@ def load_file(
         parsed = replace(parsed, venue=canonical)
 
     digest = hashlib.sha256(data).hexdigest()
+    _require_summary(parsed, filename, digest)
     if require_week:
         _require_week(parsed, filename, digest)
 
