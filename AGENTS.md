@@ -702,7 +702,12 @@ Deployment target is an always-on Linux host running Docker Compose.
 - Secrets: the IMAP app password is a Compose secret mounted at
   `/run/secrets/imap_password` and read via `IMAP_PASSWORD_FILE`. The DSN can be
   supplied via `DATABASE_URL` or `DATABASE_URL_FILE`. Secret files are
-  gitignored and never passed on the command line.
+  gitignored and never passed on the command line. File secrets are bind-mounted
+  on Linux, so the host owner and mode are what the container sees: the image
+  runs as UID 10001, so `imap_password` must be `10001:10001` mode `400` and the
+  `640`/group recipe does not work. The value must also be exactly 16 bytes — a
+  trailing newline or Google's four-group display with spaces fails identically
+  to a revoked password.
 - Container `DATABASE_URL` uses the Compose service name `db`, not `localhost`.
 
 ## 17. Explicitly out of scope

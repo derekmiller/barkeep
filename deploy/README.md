@@ -167,17 +167,47 @@ mkdir -p secrets
 read -rsp 'App password: ' P
 printf '%s' "$P" > secrets/imap_password
 unset P; echo
-chmod 700 secrets && chmod 600 secrets/imap_password
 ```
 
-Give the service user read access to exactly the configuration it needs — the
-timer runs as `barkeep`, which is not you:
+The value must be exactly **16 bytes**. Two mistakes produce the same
+`[AUTHENTICATIONFAILED]` as a revoked password, and both are common: a trailing
+newline (`echo` instead of `printf`, 17 bytes) and Google's four-group display
+pasted verbatim (`abcd efgh ijkl mnop`, 19 bytes). Strip and confirm:
 
 ```bash
-sudo chgrp barkeep .env secrets secrets/imap_password
-sudo chmod 640 .env secrets/imap_password
-sudo chmod 750 secrets
+tr -d '[:space:]' < secrets/imap_password > secrets/imap_password.clean &&
+  mv secrets/imap_password.clean secrets/imap_password
+sudo stat -c '%s bytes' secrets/imap_password      # 16
 ```
+
+Then ownership. Two files, two different readers, no overlap:
+
+| Path | Read by | Owner / mode |
+|---|---|---|
+| `.env` | `docker compose`, as `barkeep` | `barkeep:barkeep` `640` |
+| `secrets/` (directory) | Compose, which stats the path | `barkeep:barkeep` `750` |
+| `secrets/imap_password` | the container, as UID **10001** | `10001:10001` `400` |
+
+Compose bind-mounts file secrets on Linux, so the container sees the *host*
+owner and mode. `chgrp barkeep` and `640` looks reasonable and leaves the poller
+unable to read its own password:
+
+```bash
+sudo chown barkeep:barkeep .env secrets
+sudo chmod 640 .env && sudo chmod 750 secrets
+sudo chown 10001:10001 secrets/imap_password
+sudo chmod 400 secrets/imap_password
+```
+
+Prove it with the reader production actually uses, not with `sudo cat`:
+
+```bash
+docker compose -f compose.yaml -f deploy/compose.lan.yaml --profile ingest \
+  run --rm --entrypoint sh ingest -c 'wc -c < /run/secrets/imap_password'
+```
+
+`16` is the only acceptable answer. `Permission denied` means the owner and mode
+are wrong; any other number means the password itself is malformed or truncated.
 
 Build and start. The `edge` network is created once and survives `down`:
 
@@ -384,7 +414,10 @@ docker compose exec -T db psql -U barkeep -d restore_test -c \
 docker compose exec -T db psql -U barkeep -d postgres -c 'DROP DATABASE restore_test'
 ```
 
-Expect `114`. The dump includes the `analytics` views, so a restored database is
+Expect `114`, or one higher once the timer has loaded a week the corpus did not
+contain. Compare against `SELECT count(*) FROM core.report` on production rather
+than trusting either number, and read `0` as a failed restore, not an empty
+database. The dump includes the `analytics` views, so a restored database is
 immediately usable by BI.
 
 ## 8. Cut over from the workstation
@@ -479,7 +512,9 @@ produces plausible wrong SQL that still has to be reviewed.
 |---|---|
 | `error: cannot connect to IMAP host` | host DNS or egress: `getent hosts imap.gmail.com` on the host |
 | `error: missing IMAP configuration: SENDER` | `IMAP_SENDER` empty in `.env` |
-| `error: … secret …` on the timer only | `barkeep` cannot read `secrets/imap_password`; check group and mode |
+| `error: … secret …` on the timer only | `barkeep` cannot read `secrets/imap_password`; check owner and mode |
+| `Permission denied` for `secrets/imap_password` | Compose secrets are bind mounts, so the container sees the host mode and owner: file `10001:10001` `400`, not `chgrp barkeep` `640` |
+| IMAP `[AUTHENTICATIONFAILED]` | the app password is not exactly 16 bytes: `sudo stat -c '%s bytes' secrets/imap_password` catches a trailing newline (17) or Google's grouped display with spaces (19) |
 | Ingest prints `note: no report mail matched` | the label is empty or the Gmail filter is not applying it; check the filter, and check Spam — filters skip spam unless the filter says otherwise |
 | Ingest prints `warning: newest loaded report ended N days ago` | mail is arriving somewhere the poller does not look: wrong label, wrong mailbox, or `IMAP_SENDER` no longer matching |
 | `502` from Caddy | Metabase not on `edge`: start with `deploy/compose.lan.yaml` |
