@@ -656,6 +656,12 @@ The loader lives in `src/barkeep/loader/` and is invoked after parsing.
   credentials.
 - The poller is a single pass (`run_once`). Schedule it externally — daily is
   recommended so a late or missed report self-heals on the next run.
+- Silence is not success. An empty search prints a `note:` naming the mailbox
+  and the window, and the CLI prints a `warning:` when the newest loaded period
+  ended more than ten days ago. Neither changes the exit status (an empty
+  mailbox is legal), because the failure they catch — a Gmail filter that
+  stopped applying the label — would otherwise be indistinguishable from a
+  quiet week.
 
 ## 16. Deployment
 

@@ -288,17 +288,58 @@ def run_once(
     return results
 
 
+#: Warn when the newest loaded week ended longer ago than this. Reports arrive
+#: within a few days of the week closing, so a fortnight of silence means mail
+#: is not being found — a label that did not apply, a changed sender — rather
+#: than a quiet bar.
+_STALE_AFTER_DAYS = 10
+
+
+def _newest_report_age(
+    conn: psycopg.Connection, *, today: date | None = None
+) -> int | None:
+    """Return days since the newest loaded period ended, or ``None``.
+
+    ``None`` means the question could not be answered — an empty database or a
+    connection that no longer works. Callers treat it as unknown, never fresh.
+    """
+    try:
+        row = conn.execute("SELECT max(period_end) FROM core.report").fetchone()
+    except Exception:  # noqa: BLE001 - reporting must not mask the real error
+        return None
+    if row is None or row[0] is None:
+        return None
+    return ((today or date.today()) - row[0]).days
+
+
 def main() -> None:
     """CLI entry point: ``python -m barkeep.ingest``."""
     try:
         config = ImapConfig.from_env()
         with connect() as conn:
             results = run_once(conn, config)
+            age = _newest_report_age(conn)
     except LoaderError as exc:
         # A scheduled run wants one line in the journal, not a traceback. The
         # exit status still tells systemd to retry.
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
+
+    if not results:
+        # An empty search is legal, but silence is exactly how a Gmail label
+        # that stopped applying goes unnoticed for a month.
+        print(
+            f"note: no report mail matched in {config.mailbox!r} within "
+            f"{config.since_days} days",
+            file=sys.stderr,
+        )
+    if age is not None and age > _STALE_AFTER_DAYS:
+        print(
+            f"warning: newest loaded report ended {age} days ago; "
+            "check the mailbox, the label, and IMAP_SENDER",
+            file=sys.stderr,
+        )
+
     for result in results:
         detail = f" ({result.message})" if result.message else ""
         print(f"{result.status}: {result.filename}{detail}")

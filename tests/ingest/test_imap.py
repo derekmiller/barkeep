@@ -353,6 +353,53 @@ def test_main_exits_zero_when_everything_loads(monkeypatch) -> None:
     assert imap.main() is None
 
 
+def test_main_notes_an_empty_search(monkeypatch, capsys) -> None:
+    _stub_main(monkeypatch, [])
+
+    assert imap.main() is None
+
+    err = capsys.readouterr().err
+    assert "no report mail matched in 'SalesReports' within 21 days" in err
+
+
+def test_main_warns_when_the_newest_report_is_stale(monkeypatch, capsys) -> None:
+    _stub_main(monkeypatch, [])
+    monkeypatch.setattr(imap, "_newest_report_age", lambda conn: 20)
+
+    assert imap.main() is None
+
+    err = capsys.readouterr().err
+    assert "newest loaded report ended 20 days ago" in err
+
+
+def test_newest_report_age_counts_from_the_newest_period_end() -> None:
+    class Result:
+        def fetchone(self):
+            return (date(2026, 11, 14),)
+
+    class Connection:
+        def execute(self, sql):
+            return Result()
+
+    assert imap._newest_report_age(Connection(), today=date(2026, 11, 24)) == 10
+
+
+def test_newest_report_age_is_unknown_for_an_empty_database() -> None:
+    class Result:
+        def fetchone(self):
+            return (None,)
+
+    class Connection:
+        def execute(self, sql):
+            return Result()
+
+    assert imap._newest_report_age(Connection(), today=date(2026, 11, 24)) is None
+
+
+def test_newest_report_age_does_not_mask_a_broken_connection() -> None:
+    assert imap._newest_report_age(object(), today=date(2026, 11, 24)) is None
+
+
 def test_main_reports_a_loader_failure_as_one_line(monkeypatch, capsys) -> None:
     def unreachable():
         raise LoaderError("cannot connect to IMAP host 'imap.gmail.com': timed out")

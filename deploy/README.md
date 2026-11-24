@@ -438,7 +438,8 @@ can recreate it without the network the proxy expects.
 | `error: cannot connect to IMAP host` | host DNS or egress: `getent hosts imap.gmail.com` on the host |
 | `error: missing IMAP configuration: SENDER` | `IMAP_SENDER` empty in `.env` |
 | `error: … secret …` on the timer only | `barkeep` cannot read `secrets/imap_password`; check group and mode |
-| Ingest runs, prints nothing, exits 0 | the label is empty or `IMAP_SENDER` does not match the sender; nothing was found, not an error |
+| Ingest prints `note: no report mail matched` | the label is empty or the Gmail filter is not applying it; check the filter, and check Spam — filters skip spam unless the filter says otherwise |
+| Ingest prints `warning: newest loaded report ended N days ago` | mail is arriving somewhere the poller does not look: wrong label, wrong mailbox, or `IMAP_SENDER` no longer matching |
 | `502` from Caddy | Metabase not on `edge`: start with `deploy/compose.lan.yaml` |
 | Certificate warning in the browser | Caddy's root CA not installed on that device (step 5) |
 | `no such host` for `barkeep.roadkill.lan` | Pi-hole record missing, or the client caches the old answer |
