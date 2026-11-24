@@ -335,9 +335,13 @@ sudo systemctl enable --now barkeep-ingest.timer barkeep-backup.timer
 systemctl list-timers 'barkeep-*'
 ```
 
-Ingest fires daily at 06:15 host time (catch-up after downtime via `Persistent`),
+Ingest fires daily at 07:30 host time (catch-up after downtime via `Persistent`),
 backup at 03:30 with a randomised delay. `OnCalendar` is local time; add
-`TimeZone=` to a timer if the host runs UTC and you schedule in local time.
+`TimeZone=` to a timer if the host runs UTC and you schedule in local time. The
+ingest hour must sit **after** the report mail arrives — TouchBistro sends it
+Sunday shortly after 07:00, and a timer that fires before it finds nothing new
+and defers the week by a day. Daily rather than Sunday-only, so a report that
+arrives late is picked up on the next firing rather than the next week.
 
 On failure a unit retries at five-minute intervals, three attempts within two
 hours, then waits for the next daily firing — a revoked app password does not

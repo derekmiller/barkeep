@@ -3,7 +3,7 @@ Description=Daily barkeep database backup
 Documentation=file:/opt/barkeep/deploy/README.md
 
 [Timer]
-# Quiet hour, well away from the 06:15 ingest, so the dump never races a load.
+# Quiet hour, well away from the 07:30 ingest, so the dump never races a load.
 OnCalendar=*-*-* 03:30:00
 RandomizedDelaySec=30min
 # A host that was off at 03:30 still gets a dump on next boot. The dump is
