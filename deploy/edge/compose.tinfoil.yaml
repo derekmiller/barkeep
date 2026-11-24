@@ -1,0 +1,38 @@
+# Tinfoil proxy: an OpenAI-compatible endpoint in front of Tinfoil's verifiable
+# inference, used by Metabase's AI features.
+#
+#   cp deploy/edge/compose.tinfoil.yaml /opt/edge/
+#   docker compose -f /opt/edge/compose.tinfoil.yaml up -d
+#
+# It joins the external `edge` network, which Metabase already joins via
+# deploy/compose.lan.yaml, so Metabase reaches it as http://tinfoil:3301/v1
+# without this container being published to the LAN.
+#
+# `name:` pins the Compose project, so this runs independently of the Caddy stack
+# in /opt/edge/compose.yaml: starting or stopping one never reconsiders the
+# other's containers.
+name: tinfoil
+
+services:
+  tinfoil:
+    # Pinned: `latest` is this exact build today. Bump deliberately — a proxy
+    # whose job is verifying attestation is security-relevant, so an unattended
+    # upgrade is the last thing it should do.
+    image: ghcr.io/tinfoilsh/tinfoil-proxy:0.2.9
+    restart: unless-stopped
+    ports:
+      # Loopback only, for `curl http://127.0.0.1:3301/v1/models` while
+      # debugging. Metabase uses the edge network, so nothing is exposed to the
+      # LAN and no firewall hole is needed.
+      - "127.0.0.1:3301:3301"
+    networks:
+      - edge
+    # No credentials here: the upstream example runs without any. If your
+    # account needs a key, add the environment variable their docs name with a
+    # value interpolated from .env (${TINFOIL_API_KEY}), never a literal in this
+    # tracked file.
+
+networks:
+  edge:
+    external: true
+    name: edge

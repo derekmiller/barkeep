@@ -542,6 +542,42 @@ feature sends table and column metadata (and sample rows when it needs them) to
 that endpoint. A model on the LAN keeps the bar's numbers on the LAN; a weak one
 produces plausible wrong SQL that still has to be reviewed.
 
+### Tinfoil proxy
+
+Tinfoil's proxy is an OpenAI-compatible endpoint in front of their verifiable
+inference, so Metabase can be pointed at it without a model running anywhere on
+the LAN. It is **not** part of the pipeline and does not belong in `compose.yaml`:
+it is host infrastructure, like Caddy, and it should outlive the repo.
+
+`deploy/edge/compose.tinfoil.yaml` is the worked example. It runs as its own
+Compose project (`name: tinfoil`), so it never interferes with the Caddy stack:
+
+```bash
+cp /opt/barkeep/deploy/edge/compose.tinfoil.yaml /opt/edge/
+docker compose -f /opt/edge/compose.tinfoil.yaml up -d
+docker compose -f /opt/edge/compose.tinfoil.yaml ps
+```
+
+It joins the external `edge` network, which Metabase already joins through
+`deploy/compose.lan.yaml`. Test it from that network rather than from the host,
+because that is the path Metabase actually uses:
+
+```bash
+docker run --rm --network edge curlimages/curl \
+  -sS --max-time 10 http://tinfoil:3301/v1/models
+```
+
+The `127.0.0.1:3301` publish is for `curl` while debugging; nothing on the LAN
+can reach it, and `ufw` needs no change. In Metabase the base URL is
+`http://tinfoil:3301/v1` and the model is one of the ids that `/v1/models`
+returned. `MB_LLM_ALLOWED_NETWORKS=allow-private` covers it, since Docker bridge
+addresses are RFC1918.
+
+The proxy verifies attestation against Tinfoil's servers, so this container needs
+**outbound** access to the internet — the one direction `ufw` does not restrict.
+Unlike a model on the LAN, prompts and the schema metadata Metabase sends leave
+this host; that is the trade for not running a model yourself.
+
 ## 10. Troubleshooting
 
 | Symptom | Likely cause |

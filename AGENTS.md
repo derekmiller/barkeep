@@ -703,6 +703,11 @@ Deployment target is an always-on Linux host running Docker Compose.
   in another Compose project can reach `metabase:3000`. It publishes nothing new;
   the loopback port stays for SSH tunnels. The proxy itself is host
   infrastructure, not part of this package — `deploy/edge/` is a worked example.
+  `deploy/edge/compose.tinfoil.yaml` is a second example: the Tinfoil inference
+  proxy Metabase can use for its AI features. It joins `edge` as its own Compose
+  project, is pinned to an exact version, publishes only loopback, and is
+  deliberately not a service in `compose.yaml` — it is not part of ingest and
+  must not follow the pipeline's lifecycle.
 - `ingest` runs migrations then one poll pass and exits. Trigger it daily from a
   host timer; `deploy/barkeep-ingest.service` and `.timer` are samples. Do not
   add an in-container sleep loop.
