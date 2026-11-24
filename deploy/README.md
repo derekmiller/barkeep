@@ -435,6 +435,44 @@ Both `-f` files matter on every command, including `run`: omitting
 `deploy/compose.lan.yaml` makes Compose resolve a different config for `db` and
 can recreate it without the network the proxy expects.
 
+### Metabase AI against a LAN model
+
+Metabase's AI features take any OpenAI-compatible endpoint, which is how you
+point them at a model on another machine (Open WebUI, Ollama, vLLM). Metabase
+refuses private addresses unless told otherwise, so a compromised admin account
+cannot redirect the LLM call at the database host or at loopback.
+
+Set the narrowest value that works, and only if you actually use the feature:
+
+```bash
+# /opt/barkeep/.env
+MB_LLM_ALLOWED_NETWORKS=allow-private
+```
+
+then recreate — the variable is read from the environment at start, so
+`restart` does not apply it:
+
+```bash
+docker compose -f compose.yaml -f deploy/compose.lan.yaml up -d metabase
+docker compose -f compose.yaml -f deploy/compose.lan.yaml exec -T metabase \
+  printenv MB_LLM_ALLOWED_NETWORKS
+```
+
+In Metabase, the base URL is the vendor's OpenAI-compatible path — Open WebUI
+serves it under `/api`, so `http://pc.lan:8080/api`, with the key from Open WebUI
+→ Settings → Account → API Keys. Check the endpoint from a container before
+blaming the guard:
+
+```bash
+docker run --rm --network barkeep_default curlimages/curl \
+  -sS --max-time 5 http://pc.lan:8080/api/version
+```
+
+`allow-private` permits every RFC1918 destination, not just the model, and the
+feature sends table and column metadata (and sample rows when it needs them) to
+that endpoint. A model on the LAN keeps the bar's numbers on the LAN; a weak one
+produces plausible wrong SQL that still has to be reviewed.
+
 ## 10. Troubleshooting
 
 | Symptom | Likely cause |
@@ -451,4 +489,5 @@ can recreate it without the network the proxy expects.
 | Backfill loads `0 files` | `data/raw` empty on the host |
 | `PermissionError: … '/data/raw'` | corpus not readable by the container's UID 10001; `sudo chmod -R a+rX data/raw` |
 | `No services to build` | `build` ran without `--profile ingest`; Compose skips profile-gated services |
+| Metabase AI: `host … is on a network Metabase is not allowed to connect to` | `MB_LLM_ALLOWED_NETWORKS=allow-private` in `.env`, then `up -d metabase` to recreate (not `restart`) |
 | Weeks doubled under two venues | `BARKEEP_VENUE_ALIASES` missing from the host `.env` |

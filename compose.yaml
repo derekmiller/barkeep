@@ -27,6 +27,11 @@ services:
       MB_DB_USER: ${POSTGRES_USER:-barkeep}
       MB_DB_PASS: ${POSTGRES_PASSWORD:-barkeep}
       MB_DB_HOST: db
+      # Metabase's AI features refuse private-network endpoints unless this is
+      # set. `allow-private` permits the LAN and still blocks loopback, which is
+      # the narrowest value that lets it reach a model on another machine. Unset
+      # keeps Metabase's default: no private networks at all.
+      MB_LLM_ALLOWED_NETWORKS: ${MB_LLM_ALLOWED_NETWORKS:-}
     depends_on:
       db:
         condition: service_healthy

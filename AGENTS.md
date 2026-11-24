@@ -673,6 +673,12 @@ Deployment target is an always-on Linux host running Docker Compose.
   bound to loopback and stores its app data in the `metabase` database, and
   `migrate`, `ingest`, and `backfill` sit behind the `ingest` profile, so
   `docker compose up -d` starts only the database and Metabase.
+- Metabase's AI features call an OpenAI-compatible endpoint, and refuse any
+  private address unless `MB_LLM_ALLOWED_NETWORKS` says otherwise. The variable
+  is passed through from `.env` and empty by default, so a LAN model is an
+  explicit opt-in; use `allow-private`, never `allow-all`, which would also
+  permit loopback. Changing it requires recreating the container, since it is
+  read from the environment at start.
 - `compose.dev.yaml` is a workstation override that publishes Postgres for
   host-run tools and tests. Production uses `compose.yaml` alone.
 - `deploy/compose.lan.yaml` is the production override for a host with a reverse
