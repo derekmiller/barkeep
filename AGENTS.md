@@ -702,12 +702,12 @@ Deployment target is an always-on Linux host running Docker Compose.
   proxy: it attaches `metabase` to the external `edge` Docker network so a proxy
   in another Compose project can reach `metabase:3000`. It publishes nothing new;
   the loopback port stays for SSH tunnels. The proxy itself is host
-  infrastructure, not part of this package — `deploy/edge/` is a worked example.
-  `deploy/edge/compose.tinfoil.yaml` is a second example: the Tinfoil inference
-  proxy Metabase can use for its AI features. It joins `edge` as its own Compose
-  project, is pinned to an exact version, publishes only loopback, and is
-  deliberately not a service in `compose.yaml` — it is not part of ingest and
-  must not follow the pipeline's lifecycle.
+  infrastructure and lives in a separate repository
+  (`derekmiller/homelab`, at `hosts/roadkill/`), which also holds the Tinfoil
+  inference proxy Metabase can use for its AI features — pinned to an exact
+  version and run as its own Compose project, never a service in `compose.yaml`.
+  This package names the `edge` network and nothing else: no Caddyfile, no proxy
+  Compose file, no edge files. A change there must not require a change here.
 - `ingest` runs migrations then one poll pass and exits. Trigger it daily from a
   host timer; `deploy/barkeep-ingest.service` and `.timer` are samples. Do not
   add an in-container sleep loop.

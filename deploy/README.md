@@ -304,18 +304,30 @@ read-only and silently accepts nothing.
 
 ## 5. Edge proxy
 
-Caddy lives outside this repo because it will serve every service on the host.
+Caddy, TLS, and the host's DNS names are not in this repo: they front every
+service on the host, so they live in
+[`derekmiller/homelab`](https://github.com/derekmiller/homelab), deployed at
+`/opt/homelab/hosts/roadkill`. Barkeep's only stake in that repo is one site
+block, and this is all of it:
+
+```
+barkeep.roadkill.lan {
+	tls internal
+	reverse_proxy metabase:3000
+}
+```
+
+Deploy it, and keep it updated, from that repo:
 
 ```bash
-sudo mkdir -p /opt/edge && sudo chown "$USER": /opt/edge
-cp deploy/edge/compose.yaml deploy/edge/Caddyfile /opt/edge/
-cd /opt/edge && docker compose up -d
+git clone git@github.com:derekmiller/homelab.git /opt/homelab
+cd /opt/homelab/hosts/roadkill && docker compose up -d
 ```
 
 Then trust Caddy's local CA on the devices you browse from, or every page warns:
 
 ```bash
-cd /opt/edge
+cd /opt/homelab/hosts/roadkill
 docker compose exec caddy cat /data/caddy/pki/authorities/local/root.crt > caddy-root.crt
 ```
 
@@ -447,7 +459,7 @@ as an archive; do not point its Metabase at production.
 | Query the database | `docker compose exec db psql -U barkeep -d barkeep` |
 | Upgrade the code | see [Upgrading](#upgrading) |
 | Apply new migrations | `docker compose -f compose.yaml -f deploy/compose.lan.yaml --profile ingest run --rm migrate` |
-| Edge proxy changes | `cd /opt/edge && docker compose up -d` |
+| Edge proxy changes | `cd /opt/homelab/hosts/roadkill && docker compose up -d` |
 
 ### Upgrading
 
@@ -547,15 +559,15 @@ produces plausible wrong SQL that still has to be reviewed.
 Tinfoil's proxy is an OpenAI-compatible endpoint in front of their verifiable
 inference, so Metabase can be pointed at it without a model running anywhere on
 the LAN. It is **not** part of the pipeline and does not belong in `compose.yaml`:
-it is host infrastructure, like Caddy, and it should outlive the repo.
-
-`deploy/edge/compose.tinfoil.yaml` is the worked example. It runs as its own
-Compose project (`name: tinfoil`), so it never interferes with the Caddy stack:
+it is host infrastructure, like Caddy, and it lives in the same
+[`homelab`](https://github.com/derekmiller/homelab) repo as
+`hosts/roadkill/compose.tinfoil.yaml`. It runs as its own Compose project
+(`name: tinfoil`), so it never interferes with the Caddy stack:
 
 ```bash
-cp /opt/barkeep/deploy/edge/compose.tinfoil.yaml /opt/edge/
-docker compose -f /opt/edge/compose.tinfoil.yaml up -d
-docker compose -f /opt/edge/compose.tinfoil.yaml ps
+cd /opt/homelab/hosts/roadkill
+docker compose -f compose.tinfoil.yaml up -d
+docker compose -f compose.tinfoil.yaml ps
 ```
 
 It joins the external `edge` network, which Metabase already joins through
