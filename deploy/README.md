@@ -320,6 +320,7 @@ barkeep.roadkill.lan {
 Deploy it, and keep it updated, from that repo:
 
 ```bash
+sudo mkdir -p /opt/homelab && sudo chown "$USER": /opt/homelab
 git clone git@github.com:derekmiller/homelab.git /opt/homelab
 cd /opt/homelab/hosts/roadkill && docker compose up -d
 ```
