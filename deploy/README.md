@@ -321,9 +321,12 @@ Deploy it, and keep it updated, from that repo:
 
 ```bash
 sudo mkdir -p /opt/homelab && sudo chown "$USER": /opt/homelab
-git clone git@github.com:derekmiller/homelab.git /opt/homelab
+git clone https://github.com/derekmiller/homelab.git /opt/homelab
 cd /opt/homelab/hosts/roadkill && docker compose up -d
 ```
+
+HTTPS, not SSH: the repo is public and the host only pulls, so it needs no
+GitHub key. Updates work the same way, unauthenticated.
 
 Then trust Caddy's local CA on the devices you browse from, or every page warns:
 
