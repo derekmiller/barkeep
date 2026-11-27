@@ -145,7 +145,8 @@ git clone git@github.com:derekmiller/barkeep.git /opt/barkeep
 # git clone https://github.com/derekmiller/barkeep.git /opt/barkeep
 
 cd /opt/barkeep
-git log --oneline -1       # expect 30f6bf7 or later
+git log --oneline -1       # newest commit on main; compare with GitHub if unsure
+git status -sb             # expect "## main...origin/main", nothing modified
 cp .env.example .env
 ```
 
@@ -328,12 +329,23 @@ cd /opt/homelab/hosts/roadkill && docker compose up -d
 HTTPS, not SSH: the repo is public and the host only pulls, so it needs no
 GitHub key. Updates work the same way, unauthenticated.
 
-Then trust Caddy's local CA on the devices you browse from, or every page warns:
+Then trust Caddy's local CA on the devices you browse from, or every page warns.
+The public root certificate is tracked in the homelab repo at
+`hosts/roadkill/pki/caddy-root.crt`: take that copy rather than generating a new
+one, because dumping it into a checkout leaves an untracked duplicate next to the
+compose file, and the next CA rotation quietly produces a second, different one.
+On a fresh host where it is not tracked yet, read it out of the running container
+(by name, so there is no need to `cd` into the right Compose project):
 
 ```bash
-cd /opt/homelab/hosts/roadkill
-docker compose exec caddy cat /data/caddy/pki/authorities/local/root.crt > caddy-root.crt
+docker exec edge-caddy-1 \
+  cat /data/caddy/pki/authorities/local/root.crt > /tmp/caddy-root.crt
+openssl x509 -in /tmp/caddy-root.crt -noout -subject -dates -fingerprint -sha256
 ```
+
+Copy `/tmp/caddy-root.crt` to the device you browse from, and check its
+fingerprint against the one in `hosts/roadkill/pki/README.md`. A mismatch means
+Caddy's data volume was recreated and every installed copy is stale.
 
 - macOS: double-click it, add to the **System** keychain, then set it to *Always
   Trust*.
